@@ -55,6 +55,7 @@ class DegiroAccount(importer.ImporterProtocol):
         self._balance_amount = None
         self._balance_date = None
 
+        self._conversion_tolerance = 0.01
         global l
         if self.language == 'de':
             import degiro_de as l
@@ -110,15 +111,19 @@ class DegiroAccount(importer.ImporterProtocol):
                     df.at[prev_idx, 'orderid'] += row['orderid']
             prev_idx=idx
 
-        # drop rows with empty datetime
-        df=df[pd.notna(df['datetime'])]
+        # drop rows with empty datetime or empty change
+        df.dropna(subset=['datetime', 'change'], inplace=True)
 
         # Drop 'cash sweep transfer' rows. These are transfers between the flatex bank account
         # and Degiro, and have no effect on the balance
         df=df[df['description'].map(lambda d: not re.match(l.cst['re'], d))]
 
+        # convert numbers in columns 'change' and 'balance'
+        for ncol in ('change', 'balance', 'FX'):
+            df[ncol] = df[ncol].map( lambda n: l.fmt_number(n))
+
         # Skipping rows with no change
-        df=df[df['change'].map(lambda c: pd.notna(c) and D(c) != 0)]
+        df=df[df['change'] != 0]
 
         # Copy orderid as a new column uuid
         df['uuid']=df['orderid']
@@ -127,29 +132,87 @@ class DegiroAccount(importer.ImporterProtocol):
         #    if D(row['change']) == 0 and not re.match(l.liquidity_fund['re'], row['description']):
         #        print(f"Null row: {row}")
 
+        # Match currency exchanges and provide uuid if none
+        exchanges = df[df['description'].map(lambda d: bool(re.match(l.change['re'], d)))]
+        # ci1 cr1 ci1 cr2 are indices and rows of matching currency exchanges
+        # we assume that 2 consecutive exchange lines belong to each other
+        (ci1, cr1) = (None, None)
+        for ci2, cr2 in exchanges.iterrows():
+            if ci1 is None:
+                (ci1, cr1) = (ci2, cr2)
+                continue
+            # Assume first row is base, second row is foreign
+            (bi, b, fi, f) = (ci1, cr1, ci2, cr2)
+            if b['c_change'] != self.currency:
+                # False assumption, swap
+                (bi, b, fi, f) = (fi, f, bi, b)
+            if pd.isna(f['FX']):
+                print(f'No FX for foreign exchange {fi+2}')
+                # skip first row; continue with second
+                (ci1, cr1) = (ci2, cr2)
+                continue
+
+            if f['datetime'] != b['datetime']:
+                print(f'Conversion date mismatch in lines {bi+2} and {fi+2}')
+                # skip first row; continue with second
+                (ci1, cr1) = (ci2, cr2)
+                continue
+            conversion = b['change'] * f['FX']
+            result = f['change']
+            if abs(conversion+result)/b['change'] > self._conversion_tolerance:
+                print(f'Bad conversion in lines {bi+2} and {fi+2}: {conversion} vs {-result}')
+                # skip first row; continue with second
+                (ci1, cr1) = (ci2, cr2)
+                continue
+
+            # check if uuid match
+            if pd.isna(b['uuid']) != pd.isna(f['uuid']) or ( pd.notna(f['uuid']) and f['uuid'] != b['uuid']):
+                print(f'Conversion orderid mismatch in lines {bi+2} and {fi+2}')
+                # skip first row; continue with second
+                (ci1, cr1) = (ci2, cr2)
+                continue
+            elif pd.isna(f['uuid']):
+                # Generate uuid to match conversion later
+                muuid=str(uuid.uuid1())
+                df.loc[bi, 'uuid'] = muuid
+                df.loc[fi, 'uuid'] = muuid
+
+            df.loc[fi, '__price'] = Amount(-b['change'], b['c_change'])
+
+            ci1 = None
+            cr1 = None
+
+        if ci1 is not None:
+            print(f'Unmatched conversion at line {ci1+2}')
+
         # Match postings with no order id
 
         dfn = df[pd.isna(df['uuid'])]
-        # filter out liquidity fund price changes and fees
-        dfn=dfn[dfn['description'].map(lambda d: not ( re.match(l.liquidity_fund['re'], d)
-                                                       or
-                                                       re.match(l.fees['re'], d)
-                                                       or
-                                                       re.match(l.deposit['re'], d)
-                                                       or
-                                                       re.match(l.interest['re'], d)
-                                                      ) )]
 
-        #
-
+        idx_change = None
+        # Generate uuid for transactions without orderid
         for idx, row in dfn.iterrows():
+            # liquidity fund price changes and fees: single line pro transaction
+            d=row['description']
+            if (re.match(l.liquidity_fund['re'], d)
+                or
+                re.match(l.fees['re'], d)
+                or
+                re.match(l.payout['re'], d)
+                or
+                re.match(l.interest['re'], d)
+                or
+                re.match(l.deposit['re'], d) ):
+                df.loc[idx, 'uuid'] = str(uuid.uuid1())
+                continue
+
             # print (f"No order ID: {row['datetime']} {row['isin']} {row['description']} {row['change']}")
             if re.match(l.dividend['re'], row['description']):
                 # Lookup other legs of dividend transaction
                 # 1. Dividend tax: ISIN match
                 mdfn=dfn[(dfn['isin']==row['isin'])
                          & (dfn['datetime'] > row['datetime']-timedelta(days=31)) & (dfn['datetime'] < row['datetime']+timedelta(days=5) )
-                         & (dfn['description'].map(lambda d: re.match(l.dividend_tax['re'], d)))]
+                         & (dfn['description'].map(lambda d: bool(re.match(l.dividend_tax['re'], d))))]
                 muuid=str(uuid.uuid1())
                 for midx, mrow in mdfn.iterrows():
                     if pd.notna(df.loc[midx, 'uuid']):
@@ -160,24 +223,23 @@ class DegiroAccount(importer.ImporterProtocol):
                     print(f"Ambigous generated uuid for line {idx+2}")
                 df.loc[idx, 'uuid'] = muuid
                 continue
-            if re.match(l.change['re'], row['description']):
-                mdfn=dfn[dfn['datetime']==row['datetime']] # FIXME we should match book in <-> book out and check that exactly 2 rows are found
-                muuid=str(uuid.uuid1())
-                for midx, mrow in mdfn.iterrows():
-                    df.loc[midx, 'uuid'] = muuid
-                continue
             if re.match(l.split['re'], row['description']):
                 mdfn=dfn[(dfn['datetime']==row['datetime']) & (dfn['isin']==row['isin'])]
                 muuid=str(uuid.uuid1())
                 for midx, mrow in mdfn.iterrows():
                     df.loc[midx, 'uuid'] = muuid
+                continue
+            if re.match(l.buy['re'], row['description']):
+                # transition between exchanges: buy and sell the same amount for the same price
+                mdfn=dfn[(dfn['datetime']==row['datetime']) & (dfn['isin']==row['isin'])
+                         & (dfn['change']==-row['change']) & (dfn['c_change']==row['c_change'])]
+                if 1 != len(mdfn.index):
+                    print(f"Erroneous transfer match for {mdfn.index+2}")
+                    continue
 
-
-        postings = []
-
-        it=df.iterrows()
-
-        row=None
+                # No affect for booking. Drop these rows.
+                df.drop(index=idx, inplace=True)
+                df.drop(index=mdfn.index, inplace=True)
 
         def handle_lf_and_fees(vals, row, amount ):
             return [data.Posting(self.feesAccount, -amount, None, None, None, None )]
@@ -216,8 +278,6 @@ class DegiroAccount(importer.ImporterProtocol):
             return [data.Posting(self.stocksAccount, stockamount, cost, sellPrice, None, None),
                     data.Posting(self.pnlAccount,           None, None,      None, None, None)]
 
-#        def handle_change(vals, row, amount):
-#
 
         trtypes = [
             { 'd': 'Liquidity Fund Price Change', 'r': l.liquidity_fund, 'h': handle_lf_and_fees },
@@ -226,16 +286,24 @@ class DegiroAccount(importer.ImporterProtocol):
             { 'd': 'Buy',                         'r': l.buy,            'h': handle_buy },
             { 'd': 'Sell',                        'r': l.sell,           'h': handle_sell },
             { 'd': 'Interest',                    'r': l.interest,       'h': handle_lf_and_fees }
-#            { 'd': 'Change',                      'r': l.change,         'h': handle_change }
-
         ]
+
+
+        postings = []
+
+        it=df.iterrows()
+
+        row=None
 
         while True:
 
             prev_row = row
-            idx, row = next(it, [-1, 0])
+            idx, row = next(it, [None, None])
 
-            if idx == -1 or ( prev_row is not None and (pd.isna(prev_row['uuid']) or row['uuid'] != prev_row['uuid'])):
+            if row is not None and pd.isna(row['uuid']):
+                print(f"unset uuid line={idx+2}")
+
+            if idx is None or ( prev_row is not None and (pd.isna(prev_row['uuid']) or row['uuid'] != prev_row['uuid'])):
                 # previous transaction completed
                 if postings:
 
@@ -259,26 +327,18 @@ class DegiroAccount(importer.ImporterProtocol):
                     postings = []
 
 
-            if idx == -1:
+            if idx is None:
                 # prev_row was the last
                 break
 
             if re.match(l.deposit['re'], row['description']) and self.depositAccount is None:
                 continue
 
-            amount = Amount(l.fmt_number(row['change']),row['c_change'])
+            amount = Amount(row['change'],row['c_change'])
 
-            cost=None
-            if pd.notna(row['FX']):
-                cost=position.CostSpec(
-                    number_per=round(1/l.fmt_number(row['FX']), 6),
-                    number_total=None,
-                    currency=self.currency,
-                    date=None,
-                    label=None,
-                    merge=False)
+            price = row['__price'] if pd.notna(row['__price']) else None
 
-            postings.append(data.Posting(self.liquidityAccount+':'+row['c_change'], amount, cost, None, None, None ))
+            postings.append(data.Posting(self.liquidityAccount+':'+row['c_change'], amount, None, price, None, None ))
 
             match = False
             for t in trtypes:

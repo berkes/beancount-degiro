@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 from beancount.core.number import D, Decimal
+import pandas as pd
 
 def fmt_number(value: str) -> Decimal:
+    if pd.isna(value):
+        return None
     thousands_sep = '.'
     decimal_sep = ','
-
     return D(value.replace(thousands_sep, '').replace(decimal_sep, '.'))
 
 datetime_format = '%d-%m-%Y %H:%M'
