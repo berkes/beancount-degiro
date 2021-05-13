@@ -8,7 +8,6 @@ from beancount.core import data
 from beancount.core.amount import Amount
 
 from beancount.core.number import D
-from beancount.core.number import Decimal
 
 from beancount.core import position
 
@@ -91,7 +90,12 @@ class DegiroAccount(importer.ImporterProtocol):
             df = pd.read_csv(file_.name, encoding=self.file_encoding,
                              header=0, names=FIELDS_EN,
                              parse_dates={ 'datetime' : ['date', 'time'] },
-                             date_parser = self.format_datetime
+                             date_parser = self.format_datetime,
+                             converters = {
+                                 'change':  self.l.fmt_number,
+                                 'FX':      self.l.fmt_number,
+                                 'balance': self.l.fmt_number
+                             }
                              )
         except Exception as e:
             raise InvalidFormatError(f"Read file "+ file_.name + " failed " + e)
@@ -116,9 +120,6 @@ class DegiroAccount(importer.ImporterProtocol):
         # and Degiro, and have no effect on the balance
         df=df[df['description'].map(lambda d: not re.match(self.l.cst['re'], d))]
 
-        # convert numbers in columns 'change' and 'balance'
-        for ncol in ('change', 'balance', 'FX'):
-            df[ncol] = df[ncol].map( lambda n: self.l.fmt_number(n))
 
         # Skipping rows with no change
         df=df[df['change'] != 0]
