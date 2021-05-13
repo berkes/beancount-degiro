@@ -2,6 +2,22 @@
 from beancount.core.number import D, Decimal
 import pandas as pd
 
+FIELDS = (
+    'Datum',
+    'Uhrze',
+    'Valutadatum',
+    'Produkt',
+    'ISIN',
+    'Beschreibung',
+    'FX',
+    'Änderung', # Currency of change
+    '',         # Amount of change
+    'Saldo',    # Currency of balance
+    '',         # Amount of balance
+    'Order-ID'
+)
+
+
 def fmt_number(value: str) -> Decimal:
     if pd.isna(value):
         return None
