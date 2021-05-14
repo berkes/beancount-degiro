@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from beancount.core.number import D, Decimal
 import pandas as pd
+from collections import namedtuple
 
 FIELDS = (
     'Datum',
@@ -27,34 +28,42 @@ def fmt_number(value: str) -> Decimal:
 
 datetime_format = '%d-%m-%Y %H:%M'
 
-liquidity_fund = { 're': '^Geldmarktfonds ((Preisänderung)|(Umwandlung))' }
+# this should be defined in an utility module
+PD = namedtuple('PD', ['re', 'vals'], defaults=[None])
 
-fees = { 're' : '^(Transaktionsgebühr)|(Gebühr für Realtimekurse)|(Einrichtung von Handelsmodalitäten)' }
+# Descriptors for various posting types to book them automatically
 
-deposit = { 're' : '((SOFORT )?Einzahlung)|(Auszahlung)' }
+liquidity_fund = PD(re='^Geldmarktfonds ((Preisänderung)|(Umwandlung))')
 
-buy = { 're': '^(AKTIENSPLIT: )?Kauf ([\d.]+) zu je ([\d,]+) (\w+)',
-        'vals': lambda m: { 'price': fmt_number(m.group(3)),
-                                   'quantity': fmt_number(m.group(2)),
-                                   'currency': m.group(4)}
-       }
+fees = PD(re='^(Transaktionsgebühr)|(Gebühr für Realtimekurse)|(Einrichtung von Handelsmodalitäten)')
 
-sell = { 're' : '(((AKTIENSPLIT)|(AUSZAHLUNG ZERTIFIKAT)): )?Verkauf ([\d.]+) zu je ([\d,]+) (\w+)',
-         'vals' : lambda m: { 'price': fmt_number(m.group(6)),
-                              'quantity': fmt_number(m.group(5)),
-                              'currency': m.group(7)}
-         }
+deposit = PD(re='((SOFORT )?Einzahlung)|(Auszahlung)')
 
-dividend = { 're': '((Dividende)|(Ausschüttung.*))$' }
+buy = PD(
+    re='^(AKTIENSPLIT: )?Kauf ([\d.]+) zu je ([\d,]+) (\w+)',
+    vals=lambda m: { 'price': fmt_number(m.group(3)),
+                     'quantity': fmt_number(m.group(2)),
+                     'currency': m.group(4)}
+)
 
-dividend_tax = { 're': 'Dividendensteuer' }
+sell = PD(
+    re='(((AKTIENSPLIT)|(AUSZAHLUNG ZERTIFIKAT)): )?Verkauf ([\d.]+) zu je ([\d,]+) (\w+)',
+    vals=lambda m: {
+        'price': fmt_number(m.group(6)),
+        'quantity': fmt_number(m.group(5)),
+        'currency': m.group(7)}
+)
 
-cst = { 're': '(flatex)|(Degiro) Cash Sweep Transfer' }
+dividend = PD(re='((Dividende)|(Ausschüttung.*))$')
 
-interest = { 're': 'Flatex Interest' }
+dividend_tax = PD(re='Dividendensteuer')
 
-change = { 're': 'Währungswechsel (\(Ausbuchung\)|\(Einbuchung\))' }
+cst = PD(re='(flatex)|(Degiro) Cash Sweep Transfer')
 
-payout = { 're': 'AUSZAHLUNG ZERTIFIKAT' }
+interest = PD(re='Flatex Interest')
 
-split = { 're' : 'AKTIENSPLIT:' }
+change = PD(re='Währungswechsel (\(Ausbuchung\)|\(Einbuchung\))')
+
+payout = PD(re='AUSZAHLUNG ZERTIFIKAT')
+
+split = PD(re='AKTIENSPLIT:')

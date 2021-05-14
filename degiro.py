@@ -14,6 +14,8 @@ from beancount.core import position
 from beancount.ingest import importer
 import warnings
 import uuid
+from collections import namedtuple
+
 import degiro_de
 
 class InvalidFormatError(Exception):
@@ -105,6 +107,9 @@ class DegiroAccount(importer.ImporterProtocol):
         prev_idx=None
         for idx, row in df.iterrows():
             if pd.isna(row['datetime']):
+                if prev_idx is None:
+                    # First row is already broken
+                    continue
                 if pd.notna(row['product']):
                     df.at[prev_idx, 'product'] += " "+row['product']
                 if pd.notna(row['description']):
@@ -118,7 +123,7 @@ class DegiroAccount(importer.ImporterProtocol):
 
         # Drop 'cash sweep transfer' rows. These are transfers between the flatex bank account
         # and Degiro, and have no effect on the balance
-        df=df[df['description'].map(lambda d: not re.match(self.l.cst['re'], d))]
+        df=df[df['description'].map(lambda d: not re.match(self.l.cst.re, d))]
 
 
         # Skipping rows with no change
@@ -132,7 +137,7 @@ class DegiroAccount(importer.ImporterProtocol):
         #        print(f"Null row: {row}")
 
         # Match currency exchanges and provide uuid if none
-        exchanges = df[df['description'].map(lambda d: bool(re.match(self.l.change['re'], d)))]
+        exchanges = df[df['description'].map(lambda d: bool(re.match(self.l.change.re, d)))]
         # ci1 cr1 ci1 cr2 are indices and rows of matching currency exchanges
         # we assume that 2 consecutive exchange lines belong to each other
         (ci1, cr1) = (None, None)
@@ -193,25 +198,25 @@ class DegiroAccount(importer.ImporterProtocol):
         for idx, row in dfn.iterrows():
             # liquidity fund price changes and fees: single line pro transaction
             d=row['description']
-            if (re.match(self.l.liquidity_fund['re'], d)
+            if (re.match(self.l.liquidity_fund.re, d)
                 or
-                re.match(self.l.fees['re'], d)
+                re.match(self.l.fees.re, d)
                 or
-                re.match(self.l.payout['re'], d)
+                re.match(self.l.payout.re, d)
                 or
-                re.match(self.l.interest['re'], d)
+                re.match(self.l.interest.re, d)
                 or
-                re.match(self.l.deposit['re'], d) ):
+                re.match(self.l.deposit.re, d) ):
                 df.loc[idx, 'uuid'] = str(uuid.uuid1())
                 continue
 
             # print (f"No order ID: {row['datetime']} {row['isin']} {row['description']} {row['change']}")
-            if re.match(self.l.dividend['re'], row['description']):
+            if re.match(self.l.dividend.re, row['description']):
                 # Lookup other legs of dividend transaction
                 # 1. Dividend tax: ISIN match
                 mdfn=dfn[(dfn['isin']==row['isin'])
                          & (dfn['datetime'] > row['datetime']-timedelta(days=31)) & (dfn['datetime'] < row['datetime']+timedelta(days=5) )
-                         & (dfn['description'].map(lambda d: bool(re.match(self.l.dividend_tax['re'], d))))]
+                         & (dfn['description'].map(lambda d: bool(re.match(self.l.dividend_tax.re, d))))]
                 muuid=str(uuid.uuid1())
                 for midx, mrow in mdfn.iterrows():
                     if pd.notna(df.loc[midx, 'uuid']):
@@ -222,13 +227,13 @@ class DegiroAccount(importer.ImporterProtocol):
                     print(f"Ambigous generated uuid for line {idx+2}")
                 df.loc[idx, 'uuid'] = muuid
                 continue
-            if re.match(self.l.split['re'], row['description']):
+            if re.match(self.l.split.re, row['description']):
                 mdfn=dfn[(dfn['datetime']==row['datetime']) & (dfn['isin']==row['isin'])]
                 muuid=str(uuid.uuid1())
                 for midx, mrow in mdfn.iterrows():
                     df.loc[midx, 'uuid'] = muuid
                 continue
-            if re.match(self.l.buy['re'], row['description']):
+            if re.match(self.l.buy.re, row['description']):
                 # transition between exchanges: buy and sell the same amount for the same price
                 mdfn=dfn[(dfn['datetime']==row['datetime']) & (dfn['isin']==row['isin'])
                          & (dfn['change']==-row['change']) & (dfn['c_change']==row['c_change'])]
@@ -277,14 +282,15 @@ class DegiroAccount(importer.ImporterProtocol):
             return [data.Posting(self.stocksAccount, stockamount, cost, sellPrice, None, None),
                     data.Posting(self.pnlAccount,           None, None,      None, None, None)]
 
+        TT = namedtuple('TT', ['doc', 'descriptor', 'handler'])
 
         trtypes = [
-            { 'd': 'Liquidity Fund Price Change', 'r': self.l.liquidity_fund, 'h': handle_lf_and_fees },
-            { 'd': 'Fees',                        'r': self.l.fees,           'h': handle_lf_and_fees },
-            { 'd': 'Deposit',                     'r': self.l.deposit,        'h': handle_deposit },
-            { 'd': 'Buy',                         'r': self.l.buy,            'h': handle_buy },
-            { 'd': 'Sell',                        'r': self.l.sell,           'h': handle_sell },
-            { 'd': 'Interest',                    'r': self.l.interest,       'h': handle_lf_and_fees }
+            TT('Liquidity Fund Price Change', self.l.liquidity_fund, handle_lf_and_fees),
+            TT('Fees',                        self.l.fees,           handle_lf_and_fees),
+            TT('Deposit',                     self.l.deposit,        handle_deposit),
+            TT('Buy',                         self.l.buy,            handle_buy),
+            TT('Sell',                        self.l.sell,           handle_sell),
+            TT('Interest',                    self.l.interest,       handle_lf_and_fees)
         ]
 
 
@@ -330,7 +336,7 @@ class DegiroAccount(importer.ImporterProtocol):
                 # prev_row was the last
                 break
 
-            if re.match(self.l.deposit['re'], row['description']) and self.depositAccount is None:
+            if re.match(self.l.deposit.re, row['description']) and self.depositAccount is None:
                 continue
 
             amount = Amount(row['change'],row['c_change'])
@@ -341,12 +347,12 @@ class DegiroAccount(importer.ImporterProtocol):
 
             match = False
             for t in trtypes:
-                m=re.match(t['r']['re'], row['description'])
+                m=re.match(t.descriptor.re, row['description'])
                 if m:
                     mv = None
-                    if 'vals' in t['r']:
-                        mv = t['r']['vals'](m)
-                    postings += t['h'](mv, row, amount)
+                    if t.descriptor.vals:
+                        mv = t.descriptor.vals(m)
+                    postings += t.handler(mv, row, amount)
                     match = True
                     break
 
