@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from beancount.ingest import extract
 from degiro import DegiroAccount
 
@@ -7,7 +8,7 @@ from degiro import DegiroAccount
 
 account = DegiroAccount(
     language='de', # defines regular expressions for transaction descriptions
-                   # Feel free to add your 
+                   # Feel free to add your
 
     currency = 'EUR',           # main currency
 
@@ -17,6 +18,7 @@ account = DegiroAccount(
     #InterestIncomeAccount = 'Einkommen:Invest:Zins:Degiro',
     PnLAccount             = 'Einkommen:Invest:GuV:Degiro',
     DivIncomeAccount       ='Einkommen:Invest:Div',
+    ExchangeRoundingErrorAccount = 'Ausgaben:Invest:Gebühren:Rundungsfehler',
     #DepositAccount         = 'Aktiva:DKB:Girokonto'        # put in your checkings account if you want deposit transactions
 
 

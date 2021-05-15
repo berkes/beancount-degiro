@@ -39,6 +39,7 @@ FIELDS_EN = (
 
 class DegiroAccount(importer.ImporterProtocol):
     def __init__(self, language, LiquidityAccount, StocksAccount, FeesAccount, PnLAccount, DivIncomeAccount,
+                 ExchangeRoundingErrorAccount,
                  DepositAccount=None,
                  currency='EUR', file_encoding='utf-8' ):
         self.language = language
@@ -51,13 +52,14 @@ class DegiroAccount(importer.ImporterProtocol):
         self.pnlAccount = PnLAccount
         self.divIncomeAccount = DivIncomeAccount
         self.depositAccount = DepositAccount
+        self.exchangeRoundingErrorAccount = ExchangeRoundingErrorAccount
 
         self._date_from = None
         self._date_to = None
         self._balance_amount = None
         self._balance_date = None
 
-        self._conversion_tolerance = 0.01
+        self._fx_match_tolerance_percent = 2.0
         if self.language == 'de':
             self.l = degiro_de
 
@@ -85,11 +87,11 @@ class DegiroAccount(importer.ImporterProtocol):
             return None
         return dt
 
-    def extract(self, file_, existing_entries=None):
+    def extract(self, _file, existing_entries=None):
         entries = []
 
         try:
-            df = pd.read_csv(file_.name, encoding=self.file_encoding,
+            df = pd.read_csv(_file.name, encoding=self.file_encoding,
                              header=0, names=FIELDS_EN,
                              parse_dates={ 'datetime' : ['date', 'time'] },
                              date_parser = self.format_datetime,
@@ -100,9 +102,13 @@ class DegiroAccount(importer.ImporterProtocol):
                              }
                              )
         except Exception as e:
-            raise InvalidFormatError(f"Read file "+ file_.name + " failed " + e)
+            raise InvalidFormatError(f"Read file "+ _file.name + " failed " + e)
 
         # some rows are broken into more rows. Sanitize them now
+
+        # map index to line number
+        def i2l(i:int):
+            return i+2
 
         prev_idx=None
         for idx, row in df.iterrows():
@@ -151,27 +157,34 @@ class DegiroAccount(importer.ImporterProtocol):
                 # False assumption, swap
                 (bi, b, fi, f) = (fi, f, bi, b)
             if pd.isna(f['FX']):
-                print(f'No FX for foreign exchange {fi+2}')
+                print(f'No FX for foreign exchange {i2l(fi)}')
                 # skip first row; continue with second
                 (ci1, cr1) = (ci2, cr2)
                 continue
 
             if f['datetime'] != b['datetime']:
-                print(f'Conversion date mismatch in lines {bi+2} and {fi+2}')
+                print(f'Conversion date mismatch in lines {i2l(bi)} and {i2l(fi)}')
                 # skip first row; continue with second
                 (ci1, cr1) = (ci2, cr2)
                 continue
-            conversion = b['change'] * f['FX']
-            result = f['change']
-            if abs(conversion+result)/b['change'] > self._conversion_tolerance:
-                print(f'Bad conversion in lines {bi+2} and {fi+2}: {conversion} vs {-result}')
+
+            # One of calculated and actual is negative; the sum should balance
+            calculated = b['change'] * f['FX']
+            actual = f['change']
+            fx_error=calculated+actual  # expected to be 0.00 f['c_change']
+            fx_error_percent=abs(fx_error/b['change']) * D(100.0)
+            if fx_error_percent > self._fx_match_tolerance_percent:
+                print(f'{self._file}Currency exchange match failed in lines {i2l(bi)} and {i2l(fi)}:\n'
+                      f"{abs(b['change'])} {b['c_change']} * {f['FX']} {f['c_change']}/{b['c_change']} != {abs(actual)} {f['c_change']}\n"
+                      f'fx error: {fx_error_percent:.2f} %\n'
+                      f'conversion tolerance: {self._fx_match_tolerance_percent:.2f} %')
                 # skip first row; continue with second
                 (ci1, cr1) = (ci2, cr2)
                 continue
 
             # check if uuid match
             if pd.isna(b['uuid']) != pd.isna(f['uuid']) or ( pd.notna(f['uuid']) and f['uuid'] != b['uuid']):
-                print(f'Conversion orderid mismatch in lines {bi+2} and {fi+2}')
+                print(f'Conversion orderid mismatch in lines {i2l(bi)} and {i2l(fi)}')
                 # skip first row; continue with second
                 (ci1, cr1) = (ci2, cr2)
                 continue
@@ -181,13 +194,17 @@ class DegiroAccount(importer.ImporterProtocol):
                 df.loc[bi, 'uuid'] = muuid
                 df.loc[fi, 'uuid'] = muuid
 
-            df.loc[fi, '__price'] = Amount(-b['change'], b['c_change'])
+            df.loc[bi, '__FX'] = Amount(f['FX'], f['c_change'])
+            if abs(fx_error) >= 0.01:
+                # error at least 1 cent in whatever currency:
+                # apply a correction posting to avoid balance error
+                df.loc[fi, '__FX_corr'] = -fx_error
 
             ci1 = None
             cr1 = None
 
         if ci1 is not None:
-            print(f'Unmatched conversion at line {ci1+2}')
+            print(f'Unmatched conversion at line {i2l(ci1)}')
 
         # Match postings with no order id
 
@@ -220,11 +237,11 @@ class DegiroAccount(importer.ImporterProtocol):
                 muuid=str(uuid.uuid1())
                 for midx, mrow in mdfn.iterrows():
                     if pd.notna(df.loc[midx, 'uuid']):
-                        print(f"Ambigous generated uuid for line {midx+2}")
-                    #print(f"Setting uuid {muuid} for line {midx+2}")
+                        print(f"Ambigous generated uuid for line {i2l(midx)}")
+                    #print(f"Setting uuid {muuid} for line {i2l(midx)}")
                     df.loc[midx, 'uuid'] = muuid
                 if pd.notna(df.loc[idx, 'uuid']):
-                    print(f"Ambigous generated uuid for line {idx+2}")
+                    print(f"Ambigous generated uuid for line {i2l(idx)}")
                 df.loc[idx, 'uuid'] = muuid
                 continue
             if re.match(self.l.split.re, row['description']):
@@ -238,7 +255,7 @@ class DegiroAccount(importer.ImporterProtocol):
                 mdfn=dfn[(dfn['datetime']==row['datetime']) & (dfn['isin']==row['isin'])
                          & (dfn['change']==-row['change']) & (dfn['c_change']==row['c_change'])]
                 if 1 != len(mdfn.index):
-                    print(f"Erroneous transfer match for {mdfn.index+2}")
+                    print(f"Erroneous transfer match for {i2l(mdfn.index)}")
                     continue
 
                 # No affect for booking. Drop these rows.
@@ -306,7 +323,7 @@ class DegiroAccount(importer.ImporterProtocol):
             idx, row = next(it, [None, None])
 
             if row is not None and pd.isna(row['uuid']):
-                print(f"unset uuid line={idx+2}")
+                print(f"unset uuid line={i2l(idx)}")
 
             if idx is None or ( prev_row is not None and (pd.isna(prev_row['uuid']) or row['uuid'] != prev_row['uuid'])):
                 # previous transaction completed
@@ -319,7 +336,7 @@ class DegiroAccount(importer.ImporterProtocol):
                     uuid_meta={}
                     if pd.notna(prev_row['uuid']):
                         uuid_meta = {'uuid':prev_row['uuid']}
-                    meta=data.new_metadata(__file__,0, uuid_meta)
+                    meta=data.new_metadata(_file.name,i2l(idx), uuid_meta)
                     entries.append(data.Transaction(meta, # meta
                                                     prev_row['datetime'].date(),
                                                     self.FLAG,
@@ -341,9 +358,12 @@ class DegiroAccount(importer.ImporterProtocol):
 
             amount = Amount(row['change'],row['c_change'])
 
-            price = row['__price'] if pd.notna(row['__price']) else None
+            fxprice = row['__FX'] if pd.notna(row['__FX']) else None
 
-            postings.append(data.Posting(self.liquidityAccount+':'+row['c_change'], amount, None, price, None, None ))
+            postings.append(data.Posting(self.liquidityAccount+':'+row['c_change'], amount, None, fxprice, None, None ))
+
+            if pd.notna(row['__FX_corr']):
+                postings.append(data.Posting(self.exchangeRoundingErrorAccount +':'+row['c_change'], Amount(row['__FX_corr'], row['c_change']), None, None, None, None ))
 
             match = False
             for t in trtypes:
@@ -357,7 +377,7 @@ class DegiroAccount(importer.ImporterProtocol):
                     break
 
             if not match and pd.isna(row['uuid']):
-                print(f"Line {idx+2} Unepected description: {row['uuid']} {row['description']}")
+                print(f"Line {i2kl(idx)} Unepected description: {row['uuid']} {row['description']}")
 
         return entries
 
