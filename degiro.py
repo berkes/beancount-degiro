@@ -38,7 +38,8 @@ FIELDS_EN = (
 )
 
 class DegiroAccount(importer.ImporterProtocol):
-    def __init__(self, language, LiquidityAccount, StocksAccount, FeesAccount, PnLAccount, DivIncomeAccount,
+    def __init__(self, language, LiquidityAccount, StocksAccount, FeesAccount, InterestAccount,
+                 PnLAccount, DivIncomeAccount, WhtAccount,
                  ExchangeRoundingErrorAccount,
                  DepositAccount=None,
                  currency='EUR', file_encoding='utf-8' ):
@@ -49,8 +50,10 @@ class DegiroAccount(importer.ImporterProtocol):
         self.liquidityAccount = LiquidityAccount
         self.stocksAccount = StocksAccount
         self.feesAccount = FeesAccount
+        self.interestAccount = InterestAccount
         self.pnlAccount = PnLAccount
         self.divIncomeAccount = DivIncomeAccount
+        self.whtAccount = WhtAccount
         self.depositAccount = DepositAccount
         self.exchangeRoundingErrorAccount = ExchangeRoundingErrorAccount
 
@@ -262,13 +265,28 @@ class DegiroAccount(importer.ImporterProtocol):
                 df.drop(index=idx, inplace=True)
                 df.drop(index=mdfn.index, inplace=True)
 
-        def handle_lf_and_fees(vals, row, amount ):
-            return [data.Posting(self.feesAccount, -amount, None, None, None, None )]
+        def handle_fees(vals, row, amount ):
+            return 2, "Degiro", f"Fee: {row['description']}", [data.Posting(self.feesAccount, -amount, None, None, None, None )]
+
+        def handle_liquidity_fund(vals, row, amount ):
+            return 2, "Degiro", "Liquidity fund price change", [data.Posting(self.feesAccount, -amount, None, None, None, None )]
+
+        def handle_interest(vals, row, amount ):
+            return 2, "Degiro", f"Interest: {row['description']}", [data.Posting(self.interestAccount, -amount, None, None, None, None )]
 
         def handle_deposit(vals, row, amount):
             if self.depositAccount is None:
-                return []
-            return [data.Posting(self.depositAccount, -amount, None, None, None, None )]
+                return 1, "", []
+            return 2, "You", "DEPOSIT",  [data.Posting(self.depositAccount, -amount, None, None, None, None )]
+
+        def handle_dividend(vals, row, amount ):
+            return 1, row['isin'], f"Dividend {row['isin']}", [data.Posting(self.divIncomeAccount, -amount, None, None, None, None )]
+
+        def handle_dividend_tax(vals, row, amount ):
+            return 2, row['isin'], f"Dividend tax {row['isin']}", [data.Posting(self.whtAccount, -amount, None, None, None, None )]
+
+        def handle_change(vals, row, amount ):
+            return 2, "Degiro", f"Currency exchange", []
 
         def handle_buy(vals, row, amount):
             cost = position.CostSpec(
@@ -280,7 +298,8 @@ class DegiroAccount(importer.ImporterProtocol):
                 merge=False)
             stockamount = Amount(vals['quantity'],row['isin'])
 
-            return [data.Posting(self.stocksAccount, stockamount, cost, None, None, None )]
+            return 1, row['isin'], f"SELL {stockamount.number} @ {stockamount.currency} @ {vals['price']} {vals['currency']}", \
+                [data.Posting(self.stocksAccount, stockamount, cost, None, None, None )]
 
         def handle_sell(vals, row, amount):
 
@@ -296,18 +315,22 @@ class DegiroAccount(importer.ImporterProtocol):
 
             sellPrice=Amount(vals['price'], vals['currency'])
 
-            return [data.Posting(self.stocksAccount, stockamount, cost, sellPrice, None, None),
-                    data.Posting(self.pnlAccount,           None, None,      None, None, None)]
+            return 1, row['isin'], f"SELL {stockamount.number} {row['isin']} @ {vals['price']} {vals['currency']}", \
+                [data.Posting(self.stocksAccount, stockamount, cost, sellPrice, None, None),
+                 data.Posting(self.pnlAccount,           None, None,      None, None, None)]
 
         TT = namedtuple('TT', ['doc', 'descriptor', 'handler'])
 
         trtypes = [
-            TT('Liquidity Fund Price Change', self.l.liquidity_fund, handle_lf_and_fees),
-            TT('Fees',                        self.l.fees,           handle_lf_and_fees),
+            TT('Liquidity Fund Price Change', self.l.liquidity_fund, handle_liquidity_fund),
+            TT('Fees',                        self.l.fees,           handle_fees),
             TT('Deposit',                     self.l.deposit,        handle_deposit),
             TT('Buy',                         self.l.buy,            handle_buy),
             TT('Sell',                        self.l.sell,           handle_sell),
-            TT('Interest',                    self.l.interest,       handle_lf_and_fees)
+            TT('Interest',                    self.l.interest,       handle_interest),
+            TT('Dividend',                    self.l.dividend,       handle_dividend),
+            TT('Dividend tax',                self.l.dividend_tax,   handle_dividend_tax),
+            TT('Currency exchange',           self.l.change,         handle_change),
         ]
 
 
@@ -316,10 +339,19 @@ class DegiroAccount(importer.ImporterProtocol):
         it=df.iterrows()
 
         row=None
+        idx=None
+
+        PRIO_LAST=99
+        NO_DESCRIPTION="<no description>"
+        NO_PAYEE="<no payee>"
+        prio=PRIO_LAST
+        description=NO_DESCRIPTION
+        payee=NO_PAYEE
 
         while True:
 
             prev_row = row
+            prev_idx = idx
             idx, row = next(it, [None, None])
 
             if row is not None and pd.isna(row['uuid']):
@@ -329,25 +361,22 @@ class DegiroAccount(importer.ImporterProtocol):
                 # previous transaction completed
                 if postings:
 
-                    payee=prev_row['isin']
-                    if pd.isna(payee):
-                        payee="NO PAYEE"
-
                     uuid_meta={}
                     if pd.notna(prev_row['uuid']):
                         uuid_meta = {'uuid':prev_row['uuid']}
-                    meta=data.new_metadata(_file.name,i2l(idx), uuid_meta)
-                    entries.append(data.Transaction(meta, # meta
+                    entries.append(data.Transaction(data.new_metadata(_file.name,i2l(prev_idx), uuid_meta)
                                                     prev_row['datetime'].date(),
                                                     self.FLAG,
-                                                    payee, # prev_row['isin'], # payee
-                                                    prev_row['description'],
+                                                    payee,
+                                                    description,
                                                     data.EMPTY_SET, # tags
                                                     data.EMPTY_SET, # links
                                                     postings
                                                     ))
                     postings = []
-
+                    prio = PRIO_LAST
+                    description=NO_DESCRIPTION
+                    payee=NO_PAYEE
 
             if idx is None:
                 # prev_row was the last
@@ -372,12 +401,17 @@ class DegiroAccount(importer.ImporterProtocol):
                     mv = None
                     if t.descriptor.vals:
                         mv = t.descriptor.vals(m)
-                    postings += t.handler(mv, row, amount)
+                    (np, npay, nd, npostings) = t.handler(mv, row, amount)
+                    postings += npostings
+                    if np < prio:
+                        payee=npay
+                        description=nd
+                        prio=np
                     match = True
                     break
 
-            if not match and pd.isna(row['uuid']):
-                print(f"Line {i2kl(idx)} Unepected description: {row['uuid']} {row['description']}")
+            if pd.isna(row['uuid']):
+                print(f"Line {i2l(idx)} Unexpected description: {row['uuid']} {row['description']}")
 
         return entries
 

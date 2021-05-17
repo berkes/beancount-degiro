@@ -15,9 +15,11 @@ account = DegiroAccount(
     LiquidityAccount       = 'Aktiva:Invest:Degiro',
     StocksAccount          = 'Aktiva:Invest:Aktien:Degiro',
     FeesAccount            = 'Ausgaben:Invest:Gebühren:Degiro',
+    InterestAccount        = 'Ausgaben:Invest:Zins:Degiro',
     #InterestIncomeAccount = 'Einkommen:Invest:Zins:Degiro',
     PnLAccount             = 'Einkommen:Invest:GuV:Degiro',
-    DivIncomeAccount       ='Einkommen:Invest:Div',
+    DivIncomeAccount       = 'Einkommen:Invest:Div',
+    WhtAccount             = 'Ausgaben:Invest:Wht:Degiro',
     ExchangeRoundingErrorAccount = 'Ausgaben:Invest:Gebühren:Rundungsfehler',
     #DepositAccount         = 'Aktiva:DKB:Girokonto'        # put in your checkings account if you want deposit transactions
 
