@@ -12,16 +12,16 @@ account = DegiroAccount(
 
     currency = 'EUR',           # main currency
 
-    LiquidityAccount       = 'Aktiva:Invest:Degiro',
-    StocksAccount          = 'Aktiva:Invest:Aktien:Degiro',
-    FeesAccount            = 'Ausgaben:Invest:Gebühren:Degiro',
-    InterestAccount        = 'Ausgaben:Invest:Zins:Degiro',
-    #InterestIncomeAccount = 'Einkommen:Invest:Zins:Degiro',
-    PnLAccount             = 'Einkommen:Invest:GuV:Degiro',
-    DivIncomeAccount       = 'Einkommen:Invest:Div',
-    WhtAccount             = 'Ausgaben:Invest:Wht:Degiro',
-    ExchangeRoundingErrorAccount = 'Ausgaben:Invest:Gebühren:Rundungsfehler',
-    #DepositAccount         = 'Aktiva:DKB:Girokonto'        # put in your checkings account if you want deposit transactions
+    LiquidityAccount       = 'Aktiva:Invest:Degiro:{currency}', # Available tokens: {currency}
+    StocksAccount          = 'Aktiva:Invest:Aktien:Degiro',     # Available tokens: {isin}
+    FeesAccount            = 'Ausgaben:Invest:Gebühren:Degiro:{currency}', # Available tokens: {currency}
+    InterestAccount        = 'Ausgaben:Invest:Zins:Degiro',     # Available tokens: {currency}
+    PnLAccount             = 'Einkommen:Invest:GuV:Degiro',     # Available tokens: {isin}, {currency}
+    DivIncomeAccount       = 'Einkommen:Invest:Div',            # Available tokens: {isin}, {currency}
+    WhtAccount             = 'Ausgaben:Invest:Wht:Degiro',      # Available tokens: {isin}, {currency}
+    ExchangeRoundingErrorAccount = 'Ausgaben:Invest:Gebühren:Rundungsfehler', # Available tokens: {currency}
+    # DepositAccount: put in your checkings account if you want deposit transactions
+    #DepositAccount         = 'Aktiva:DKB:Girokonto'        # Available tokens: {currency}
 
 
 )

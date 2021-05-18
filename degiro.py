@@ -75,7 +75,7 @@ class DegiroAccount(importer.ImporterProtocol):
             return bool(re.match(','.join(self.l.FIELDS), fd.readline()))
 
     def file_account(self, _):
-        return self.account
+        return self.liquidityAccount.format(currency=self.currency)
 
     def file_date(self, file_):
         # unfortunately, no simple way to determine file date from content.
@@ -266,26 +266,35 @@ class DegiroAccount(importer.ImporterProtocol):
                 df.drop(index=mdfn.index, inplace=True)
 
         def handle_fees(vals, row, amount ):
-            return 2, "Degiro", f"Fee: {row['description']}", [data.Posting(self.feesAccount, -amount, None, None, None, None )]
+            return 2, "Degiro", f"Fee: {row['description']}", \
+                [data.Posting(self.feesAccount.format(currency=amount.currency), -amount, None, None, None, None )]
 
         def handle_liquidity_fund(vals, row, amount ):
-            return 2, "Degiro", "Liquidity fund price change", [data.Posting(self.feesAccount, -amount, None, None, None, None )]
+            return 2, "Degiro", "Liquidity fund price change", \
+                [data.Posting(self.interestAccount.format(currency=amount.currency), -amount, None, None, None, None )]
 
         def handle_interest(vals, row, amount ):
-            return 2, "Degiro", f"Interest: {row['description']}", [data.Posting(self.interestAccount, -amount, None, None, None, None )]
+            return 2, "Degiro", f"Interest: {row['description']}", \
+                [data.Posting(self.interestAccount.format(currency=amount.currency), -amount, None, None, None, None )]
 
         def handle_deposit(vals, row, amount):
             if self.depositAccount is None:
-                return 1, "", []
-            return 2, "You", "DEPOSIT",  [data.Posting(self.depositAccount, -amount, None, None, None, None )]
+                # shall not happen anyway
+                return PRIO_LAST, "", []
+            return 2, "You", "Deposit/Withdrawal",  \
+                [data.Posting(self.depositAccount.format(currency=amount.currency), -amount, None, None, None, None )]
 
         def handle_dividend(vals, row, amount ):
-            return 1, row['isin'], f"Dividend {row['isin']}", [data.Posting(self.divIncomeAccount, -amount, None, None, None, None )]
+            return 1, row['isin'], f"Dividend {row['isin']}", \
+                [data.Posting(self.divIncomeAccount.format(currency=amount.currency, isin=row['isin']), -amount, None, None, None, None )]
 
         def handle_dividend_tax(vals, row, amount ):
-            return 2, row['isin'], f"Dividend tax {row['isin']}", [data.Posting(self.whtAccount, -amount, None, None, None, None )]
+            return 2, row['isin'], f"Dividend tax {row['isin']}", \
+                [data.Posting(self.whtAccount.format(currency=amount.currency, isin=row['isin']), -amount, None, None, None, None )]
 
         def handle_change(vals, row, amount ):
+            # No extra posting; currency exchange has already two legs in the cvs
+            # Just make a pretty description
             return 2, "Degiro", f"Currency exchange", []
 
         def handle_buy(vals, row, amount):
@@ -299,7 +308,7 @@ class DegiroAccount(importer.ImporterProtocol):
             stockamount = Amount(vals['quantity'],row['isin'])
 
             return 1, row['isin'], f"SELL {stockamount.number} @ {stockamount.currency} @ {vals['price']} {vals['currency']}", \
-                [data.Posting(self.stocksAccount, stockamount, cost, None, None, None )]
+                [data.Posting(self.stocksAccount.format(isin=row['isin']), stockamount, cost, None, None, None )]
 
         def handle_sell(vals, row, amount):
 
@@ -316,8 +325,12 @@ class DegiroAccount(importer.ImporterProtocol):
             sellPrice=Amount(vals['price'], vals['currency'])
 
             return 1, row['isin'], f"SELL {stockamount.number} {row['isin']} @ {vals['price']} {vals['currency']}", \
-                [data.Posting(self.stocksAccount, stockamount, cost, sellPrice, None, None),
-                 data.Posting(self.pnlAccount,           None, None,      None, None, None)]
+                [
+                    data.Posting(self.stocksAccount.format(isin=row['isin']),
+                                 stockamount, cost, sellPrice, None, None),
+                    data.Posting(self.pnlAccount.format(currency=row['c_change'], isin=row['isin']),
+                                 None,        None,      None, None, None)
+                ]
 
         TT = namedtuple('TT', ['doc', 'descriptor', 'handler'])
 
@@ -394,10 +407,15 @@ class DegiroAccount(importer.ImporterProtocol):
 
             fxprice = row['__FX'] if pd.notna(row['__FX']) else None
 
-            postings.append(data.Posting(self.liquidityAccount+':'+row['c_change'], amount, None, fxprice, None, None ))
+            postings.append(data.Posting(self.liquidityAccount.format(currency=row['c_change']), amount, None, fxprice, None, None ))
 
             if pd.notna(row['__FX_corr']):
-                postings.append(data.Posting(self.exchangeRoundingErrorAccount +':'+row['c_change'], Amount(row['__FX_corr'], row['c_change']), None, None, None, None ))
+                postings.append(
+                    data.Posting(
+                        self.exchangeRoundingErrorAccount.format(currency=row['c_change']),
+                        Amount(row['__FX_corr'], row['c_change']), None, None, None, None
+                    )
+                )
 
             match = False
             for t in trtypes:
@@ -424,7 +442,7 @@ class DegiroAccount(importer.ImporterProtocol):
                 data.Balance(
                     data.new_metadata(_file.name, b['line']),
                     b['date'] + timedelta(days=1),
-                    self.liquidityAccount+':'+bc,
+                    self.liquidityAccount.format(currency=bc),
                     Amount(b['balance'], bc),
                     None,
                     None,
