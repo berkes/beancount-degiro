@@ -177,7 +177,7 @@ class DegiroAccount(importer.ImporterProtocol):
             fx_error=calculated+actual  # expected to be 0.00 f['c_change']
             fx_error_percent=abs(fx_error/b['change']) * D(100.0)
             if fx_error_percent > self._fx_match_tolerance_percent:
-                print(f'{self._file}Currency exchange match failed in lines {i2l(bi)} and {i2l(fi)}:\n'
+                print(f'{_file} Currency exchange match failed in lines {i2l(bi)} and {i2l(fi)}:\n'
                       f"{abs(b['change'])} {b['c_change']} * {f['FX']} {f['c_change']}/{b['c_change']} != {abs(actual)} {f['c_change']}\n"
                       f'fx error: {fx_error_percent:.2f} %\n'
                       f'conversion tolerance: {self._fx_match_tolerance_percent:.2f} %')
@@ -348,11 +348,16 @@ class DegiroAccount(importer.ImporterProtocol):
         description=NO_DESCRIPTION
         payee=NO_PAYEE
 
+        balances={}
+
         while True:
 
             prev_row = row
             prev_idx = idx
             idx, row = next(it, [None, None])
+
+            if row is not None and not row['c_balance'] in balances:
+                balances[row['c_balance']]={'line': i2l(idx), 'balance': row['balance'], 'date': row['datetime'].date()}
 
             if row is not None and pd.isna(row['uuid']):
                 print(f"unset uuid line={i2l(idx)}")
@@ -364,7 +369,7 @@ class DegiroAccount(importer.ImporterProtocol):
                     uuid_meta={}
                     if pd.notna(prev_row['uuid']):
                         uuid_meta = {'uuid':prev_row['uuid']}
-                    entries.append(data.Transaction(data.new_metadata(_file.name,i2l(prev_idx), uuid_meta)
+                    entries.append(data.Transaction(data.new_metadata(_file.name,i2l(prev_idx), uuid_meta),
                                                     prev_row['datetime'].date(),
                                                     self.FLAG,
                                                     payee,
@@ -412,6 +417,19 @@ class DegiroAccount(importer.ImporterProtocol):
 
             if pd.isna(row['uuid']):
                 print(f"Line {i2l(idx)} Unexpected description: {row['uuid']} {row['description']}")
+
+        for bc in balances:
+            b=balances[bc]
+            entries.append(
+                data.Balance(
+                    data.new_metadata(_file.name, b['line']),
+                    b['date'] + timedelta(days=1),
+                    self.liquidityAccount+':'+bc,
+                    Amount(b['balance'], bc),
+                    None,
+                    None,
+                )
+            )
 
         return entries
 
