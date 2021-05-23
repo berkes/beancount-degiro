@@ -1,5 +1,8 @@
 import pandas as pd
 
+import logging
+import sys
+
 import csv
 import re
 from datetime import datetime, timedelta
@@ -12,10 +15,9 @@ from beancount.core.number import D
 from beancount.core import position
 
 from beancount.ingest import importer
-import warnings
 import uuid
 from collections import namedtuple
-
+from stockutil import StockSearch
 import degiro_de
 
 class InvalidFormatError(Exception):
@@ -42,6 +44,7 @@ class DegiroAccount(importer.ImporterProtocol):
                  PnLAccount, DivIncomeAccount, WhtAccount,
                  ExchangeRoundingErrorAccount,
                  DepositAccount=None,
+                 TickerCacheFile=None,
                  currency='EUR', file_encoding='utf-8' ):
         self.language = language
         self.currency = currency
@@ -56,7 +59,7 @@ class DegiroAccount(importer.ImporterProtocol):
         self.whtAccount = WhtAccount
         self.depositAccount = DepositAccount
         self.exchangeRoundingErrorAccount = ExchangeRoundingErrorAccount
-
+        self.tickerCacheFile = TickerCacheFile
         self._date_from = None
         self._date_to = None
         self._balance_amount = None
@@ -82,22 +85,29 @@ class DegiroAccount(importer.ImporterProtocol):
         # fall back to file creation date.
         return None
 
-    def format_datetime(self, x):
-        try:
-            dt = pd.to_datetime(x, format=self.l.datetime_format)
-        except Exception as e:
-            # bad row with no date (will be sanitized later)
-            return None
-        return dt
-
     def extract(self, _file, existing_entries=None):
+        root=logging.getLogger()
+        root.setLevel(logging.DEBUG)
+        handler = logging.StreamHandler(sys.stderr)
+        #handler.setLevel(logging.DEBUG)
+        handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s: %(message)s'))
+        root.addHandler(handler)
+
         entries = []
+
+        def format_datetime(x):
+            try:
+                dt = pd.to_datetime(x, format=self.l.datetime_format)
+            except Exception as e:
+                # bad row with no date (will be sanitized later)
+                return None
+            return dt
 
         try:
             df = pd.read_csv(_file.name, encoding=self.file_encoding,
                              header=0, names=FIELDS_EN,
                              parse_dates={ 'datetime' : ['date', 'time'] },
-                             date_parser = self.format_datetime,
+                             date_parser = format_datetime,
                              converters = {
                                  'change':  self.l.fmt_number,
                                  'FX':      self.l.fmt_number,
@@ -160,13 +170,13 @@ class DegiroAccount(importer.ImporterProtocol):
                 # False assumption, swap
                 (bi, b, fi, f) = (fi, f, bi, b)
             if pd.isna(f['FX']):
-                print(f'No FX for foreign exchange {i2l(fi)}')
+                logging.log(logging.WARNING, f'line={i2l(fi)} no FX for foreign exchange')
                 # skip first row; continue with second
                 (ci1, cr1) = (ci2, cr2)
                 continue
 
             if f['datetime'] != b['datetime']:
-                print(f'Conversion date mismatch in lines {i2l(bi)} and {i2l(fi)}')
+                logging.log(logging.WARNING, f'line={i2l(bi)} line={i2l(fi)} conversion date mismatch')
                 # skip first row; continue with second
                 (ci1, cr1) = (ci2, cr2)
                 continue
@@ -177,17 +187,18 @@ class DegiroAccount(importer.ImporterProtocol):
             fx_error=calculated+actual  # expected to be 0.00 f['c_change']
             fx_error_percent=abs(fx_error/b['change']) * D(100.0)
             if fx_error_percent > self._fx_match_tolerance_percent:
-                print(f'{_file} Currency exchange match failed in lines {i2l(bi)} and {i2l(fi)}:\n'
-                      f"{abs(b['change'])} {b['c_change']} * {f['FX']} {f['c_change']}/{b['c_change']} != {abs(actual)} {f['c_change']}\n"
-                      f'fx error: {fx_error_percent:.2f} %\n'
-                      f'conversion tolerance: {self._fx_match_tolerance_percent:.2f} %')
+                logging.log(logging.WARNING,
+                    f'line={i2l(bi)} line={i2l(fi)} currency exchange match failed:\n'
+                    f"  {abs(b['change'])} {b['c_change']} * {f['FX']} {f['c_change']}/{b['c_change']} != {abs(actual)} {f['c_change']} "
+                    f'fx error: {fx_error_percent:.2f}% '
+                    f'conversion tolerance: {self._fx_match_tolerance_percent:.2f}%')
                 # skip first row; continue with second
                 (ci1, cr1) = (ci2, cr2)
                 continue
 
             # check if uuid match
             if pd.isna(b['uuid']) != pd.isna(f['uuid']) or ( pd.notna(f['uuid']) and f['uuid'] != b['uuid']):
-                print(f'Conversion orderid mismatch in lines {i2l(bi)} and {i2l(fi)}')
+                logging.log(logging.WARNING, f'line={i2l(bi)} line={i2l(fi)} conversion orderid mismatch')
                 # skip first row; continue with second
                 (ci1, cr1) = (ci2, cr2)
                 continue
@@ -207,7 +218,7 @@ class DegiroAccount(importer.ImporterProtocol):
             cr1 = None
 
         if ci1 is not None:
-            print(f'Unmatched conversion at line {i2l(ci1)}')
+            logging.log(logging.WARNING, f'line={i2l(ci1)} unmatched conversion')
 
         # Match postings with no order id
 
@@ -240,11 +251,10 @@ class DegiroAccount(importer.ImporterProtocol):
                 muuid=str(uuid.uuid1())
                 for midx, mrow in mdfn.iterrows():
                     if pd.notna(df.loc[midx, 'uuid']):
-                        print(f"Ambigous generated uuid for line {i2l(midx)}")
-                    #print(f"Setting uuid {muuid} for line {i2l(midx)}")
+                        logging.log(logging.WARNING, f"line={i2l(midx)} ambigous generated uuid")
                     df.loc[midx, 'uuid'] = muuid
                 if pd.notna(df.loc[idx, 'uuid']):
-                    print(f"Ambigous generated uuid for line {i2l(idx)}")
+                    logging.log(logging.WARNING, f"line={i2l(idx)} ambigous generated uuid")
                 df.loc[idx, 'uuid'] = muuid
                 continue
             if re.match(self.l.split.re, row['description']):
@@ -258,12 +268,14 @@ class DegiroAccount(importer.ImporterProtocol):
                 mdfn=dfn[(dfn['datetime']==row['datetime']) & (dfn['isin']==row['isin'])
                          & (dfn['change']==-row['change']) & (dfn['c_change']==row['c_change'])]
                 if 1 != len(mdfn.index):
-                    print(f"Erroneous transfer match for {i2l(mdfn.index)}")
+                    logging.log(logging.WARNING, f"line={i2l(mdfn.index)} erroneous transfer match")
                     continue
 
                 # No affect for booking. Drop these rows.
                 df.drop(index=idx, inplace=True)
                 df.drop(index=mdfn.index, inplace=True)
+
+        stocks=StockSearch(self.tickerCacheFile)
 
         def handle_fees(vals, row, amount ):
             return 2, "Degiro", f"Fee: {row['description']}", \
@@ -305,14 +317,17 @@ class DegiroAccount(importer.ImporterProtocol):
                 date=row['datetime'].date(),
                 label=None,
                 merge=False)
-            stockamount = Amount(vals['quantity'],row['isin'])
 
-            return 1, row['isin'], f"SELL {stockamount.number} @ {stockamount.currency} @ {vals['price']} {vals['currency']}", \
-                [data.Posting(self.stocksAccount.format(isin=row['isin']), stockamount, cost, None, None, None )]
+            ticker=stocks.isin2ticker(row['isin'])
+            stockamount = Amount(vals['quantity'],ticker)
+
+            return 1, ticker, f"BUY {row['product']} {stockamount.number} {ticker} @ {vals['price']} {vals['currency']}", \
+                [data.Posting(self.stocksAccount.format(isin=row['isin'], ticker=ticker), stockamount, cost, None, None, None )]
 
         def handle_sell(vals, row, amount):
 
-            stockamount = Amount(-vals['quantity'], row['isin'])
+            ticker=stocks.isin2ticker(row['isin'])
+            stockamount = Amount(-vals['quantity'], ticker)
 
             cost=position.CostSpec(
                 number_per=None,
@@ -324,9 +339,9 @@ class DegiroAccount(importer.ImporterProtocol):
 
             sellPrice=Amount(vals['price'], vals['currency'])
 
-            return 1, row['isin'], f"SELL {stockamount.number} {row['isin']} @ {vals['price']} {vals['currency']}", \
+            return 1, ticker, f"SELL {row['product']} {stockamount.number} {ticker} @ {vals['price']} {vals['currency']}", \
                 [
-                    data.Posting(self.stocksAccount.format(isin=row['isin']),
+                    data.Posting(self.stocksAccount.format(isin=row['isin'], ticker=ticker),
                                  stockamount, cost, sellPrice, None, None),
                     data.Posting(self.pnlAccount.format(currency=row['c_change'], isin=row['isin']),
                                  None,        None,      None, None, None)
@@ -373,7 +388,7 @@ class DegiroAccount(importer.ImporterProtocol):
                 balances[row['c_balance']]={'line': i2l(idx), 'balance': row['balance'], 'date': row['datetime'].date()}
 
             if row is not None and pd.isna(row['uuid']):
-                print(f"unset uuid line={i2l(idx)}")
+                logging.log(logging.WARNING, f"line={i2l(idx)} unexpected description {row['description']}, no uuid generated")
 
             if idx is None or ( prev_row is not None and (pd.isna(prev_row['uuid']) or row['uuid'] != prev_row['uuid'])):
                 # previous transaction completed
@@ -433,9 +448,6 @@ class DegiroAccount(importer.ImporterProtocol):
                     match = True
                     break
 
-            if pd.isna(row['uuid']):
-                print(f"Line {i2l(idx)} Unexpected description: {row['uuid']} {row['description']}")
-
         for bc in balances:
             b=balances[bc]
             entries.append(
@@ -449,5 +461,6 @@ class DegiroAccount(importer.ImporterProtocol):
                 )
             )
 
+        stocks.save_cache()
         return entries
 
