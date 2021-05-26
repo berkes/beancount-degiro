@@ -41,9 +41,12 @@ deposit = PD(re='((SOFORT )?Einzahlung)|(Auszahlung)')
 
 buy = PD(
     re='^(AKTIENSPLIT: )?Kauf ([\d.]+) zu je ([\d,]+) (\w+)',
-    vals=lambda m: { 'price': fmt_number(m.group(3)),
-                     'quantity': fmt_number(m.group(2)),
-                     'currency': m.group(4)}
+    vals=lambda m: {
+        'price': fmt_number(m.group(3)),
+        'quantity': fmt_number(m.group(2)),
+        'currency': m.group(4),
+        'split': bool(m.group(1))
+    }
 )
 
 sell = PD(
@@ -51,7 +54,9 @@ sell = PD(
     vals=lambda m: {
         'price': fmt_number(m.group(6)),
         'quantity': fmt_number(m.group(5)),
-        'currency': m.group(7)}
+        'currency': m.group(7),
+        'split': bool(m.group(3))
+    }
 )
 
 dividend = PD(re='((Dividende)|(Ausschüttung.*))$')

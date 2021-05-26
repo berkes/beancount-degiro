@@ -14,6 +14,7 @@ account = DegiroAccount(
 
     LiquidityAccount       = 'Aktiva:Invest:Degiro:{currency}', # Available tokens: {currency}
     StocksAccount          = 'Aktiva:Invest:Aktien:Degiro:{ticker}',     # Available tokens: {isin}, {ticker}
+    SplitsAccount          = 'Aktiva:Invest:Aktiensplits:Degiro:{ticker}',     # Available tokens: {isin}, {ticker}
     FeesAccount            = 'Ausgaben:Invest:Gebühren:Degiro:{currency}', # Available tokens: {currency}
     InterestAccount        = 'Ausgaben:Invest:Zins:Degiro',     # Available tokens: {currency}
     PnLAccount             = 'Einkommen:Invest:GuV:Degiro',     # Available tokens: {isin}, {ticker}, {currency}

@@ -40,7 +40,7 @@ FIELDS_EN = (
 )
 
 class DegiroAccount(importer.ImporterProtocol):
-    def __init__(self, language, LiquidityAccount, StocksAccount, FeesAccount, InterestAccount,
+    def __init__(self, language, LiquidityAccount, StocksAccount, SplitsAccount, FeesAccount, InterestAccount,
                  PnLAccount, DivIncomeAccount, WhtAccount,
                  ExchangeRoundingErrorAccount,
                  DepositAccount=None,
@@ -52,6 +52,7 @@ class DegiroAccount(importer.ImporterProtocol):
 
         self.liquidityAccount = LiquidityAccount
         self.stocksAccount = StocksAccount
+        self.splitsAccount = SplitsAccount
         self.feesAccount = FeesAccount
         self.interestAccount = InterestAccount
         self.pnlAccount = PnLAccount
@@ -224,7 +225,7 @@ class DegiroAccount(importer.ImporterProtocol):
 
         dfn = df[pd.isna(df['uuid'])]
 
-        idx_change = None
+        idx_split = None
         # Generate uuid for transactions without orderid
         for idx, row in dfn.iterrows():
             # liquidity fund price changes and fees: single line pro transaction
@@ -258,10 +259,18 @@ class DegiroAccount(importer.ImporterProtocol):
                 df.loc[idx, 'uuid'] = muuid
                 continue
             if re.match(self.l.split.re, row['description']):
-                mdfn=dfn[(dfn['datetime']==row['datetime']) & (dfn['isin']==row['isin'])]
+                if idx_split is None:
+                    idx_split = idx
+                    continue
+                other_row=dfn.loc[idx_split]
+                if other_row['datetime'] != row['datetime']:
+                    logging.log(logging.WARNING, f"line={i2l(idx_split)} line={i2l(idx)} split matching failed")
+                    idx_split=idx  # retry matching this row with following split row
+                    continue
                 muuid=str(uuid.uuid1())
-                for midx, mrow in mdfn.iterrows():
-                    df.loc[midx, 'uuid'] = muuid
+                logging.log(logging.INFO, f"line={i2l(idx_split)} line={i2l(idx)} marking split uuid={muuid}")
+                df.loc[idx_split, 'uuid'] = df.loc[idx, 'uuid'] = muuid
+                idx_split=None
                 continue
             if re.match(self.l.buy.re, row['description']):
                 # transition between exchanges: buy and sell the same amount for the same price
@@ -321,8 +330,15 @@ class DegiroAccount(importer.ImporterProtocol):
             ticker=stocks.isin2ticker(row['isin'])
             stockamount = Amount(vals['quantity'],ticker)
 
-            return 1, ticker, f"BUY {row['product']} {stockamount.number} {ticker} @ {vals['price']} {vals['currency']}", \
-                [data.Posting(self.stocksAccount.format(isin=row['isin'], ticker=ticker), stockamount, cost, None, None, None )]
+            if vals['split']:
+                account = self.splitsAccount
+                tdesc=f"SPLIT {row['product']}"
+            else:
+                account = self.stocksAccount
+                tdesc=f"BUY {row['product']} {stockamount.number} {ticker} @ {vals['price']} {vals['currency']}"
+
+            return 1, ticker, tdesc, \
+                [data.Posting(account.format(isin=row['isin'], ticker=ticker), stockamount, cost, None, None, None )]
 
         def handle_sell(vals, row, amount):
 
@@ -339,9 +355,16 @@ class DegiroAccount(importer.ImporterProtocol):
 
             sellPrice=Amount(vals['price'], vals['currency'])
 
-            return 1, ticker, f"SELL {row['product']} {stockamount.number} {ticker} @ {vals['price']} {vals['currency']}", \
+            if vals['split']:
+                account = self.splitsAccount
+                tdesc=f"SPLIT {row['product']} {ticker}"
+            else:
+                account = self.stocksAccount
+                tdesc=f"SELL {row['product']} {stockamount.number} {ticker} @ {vals['price']} {vals['currency']}"
+
+            return 1, ticker, tdesc, \
                 [
-                    data.Posting(self.stocksAccount.format(isin=row['isin'], ticker=ticker),
+                    data.Posting(account.format(isin=row['isin'], ticker=ticker),
                                  stockamount, cost, sellPrice, None, None),
                     data.Posting(self.pnlAccount.format(currency=row['c_change'], isin=row['isin']),
                                  None,        None,      None, None, None)
@@ -388,7 +411,7 @@ class DegiroAccount(importer.ImporterProtocol):
                 balances[row['c_balance']]={'line': i2l(idx), 'balance': row['balance'], 'date': row['datetime'].date()}
 
             if row is not None and pd.isna(row['uuid']):
-                logging.log(logging.WARNING, f"line={i2l(idx)} unexpected description {row['description']}, no uuid generated")
+                logging.log(logging.WARNING, f"line={i2l(idx)} no uuid description={row['description']}")
 
             if idx is None or ( prev_row is not None and (pd.isna(prev_row['uuid']) or row['uuid'] != prev_row['uuid'])):
                 # previous transaction completed
