@@ -152,9 +152,6 @@ class DegiroAccount(importer.ImporterProtocol):
         # Copy orderid as a new column uuid
         df['uuid']=df['orderid']
 
-        #for idx, row in df.iterrows():
-        #    if D(row['change']) == 0 and not re.match(l.liquidity_fund['re'], row['description']):
-        #        print(f"Null row: {row}")
 
         # Match currency exchanges and provide uuid if none
         exchanges = df[df['description'].map(lambda d: bool(re.match(self.l.change.re, d)))]
@@ -225,7 +222,7 @@ class DegiroAccount(importer.ImporterProtocol):
 
         dfn = df[pd.isna(df['uuid'])]
 
-        idx_split = None
+        idx_split = None # Consecutive stock split rows are matched
         # Generate uuid for transactions without orderid
         for idx, row in dfn.iterrows():
             # liquidity fund price changes and fees: single line pro transaction
@@ -242,7 +239,6 @@ class DegiroAccount(importer.ImporterProtocol):
                 df.loc[idx, 'uuid'] = str(uuid.uuid1())
                 continue
 
-            # print (f"No order ID: {row['datetime']} {row['isin']} {row['description']} {row['change']}")
             if re.match(self.l.dividend.re, row['description']):
                 # Lookup other legs of dividend transaction
                 # 1. Dividend tax: ISIN match
@@ -302,16 +298,24 @@ class DegiroAccount(importer.ImporterProtocol):
             if self.depositAccount is None:
                 # shall not happen anyway
                 return PRIO_LAST, "", []
-            return 2, "You", "Deposit/Withdrawal",  \
+            return 2, "self", "Deposit/Withdrawal",  \
                 [data.Posting(self.depositAccount.format(currency=amount.currency), -amount, None, None, None, None )]
 
         def handle_dividend(vals, row, amount ):
-            return 1, row['isin'], f"Dividend {row['isin']}", \
-                [data.Posting(self.divIncomeAccount.format(currency=amount.currency, isin=row['isin']), -amount, None, None, None, None )]
+            ticker=stocks.isin2ticker(row['isin'])
+            return 1, row['isin'], f"Dividend {ticker}", \
+                [
+                    data.Posting(self.divIncomeAccount.format(currency=amount.currency, isin=row['isin'], ticker=ticker),
+                                 -amount, None, None, None, None )
+                ]
 
         def handle_dividend_tax(vals, row, amount ):
-            return 2, row['isin'], f"Dividend tax {row['isin']}", \
-                [data.Posting(self.whtAccount.format(currency=amount.currency, isin=row['isin']), -amount, None, None, None, None )]
+            ticker=stocks.isin2ticker(row['isin'])
+            return 2, row['isin'], f"Dividend tax {ticker}", \
+                [
+                    data.Posting(self.whtAccount.format(currency=amount.currency, isin=row['isin'], ticker=ticker),
+                                 -amount, None, None, None, None )
+                ]
 
         def handle_change(vals, row, amount ):
             # No extra posting; currency exchange has already two legs in the cvs
@@ -366,8 +370,8 @@ class DegiroAccount(importer.ImporterProtocol):
                 [
                     data.Posting(account.format(isin=row['isin'], ticker=ticker),
                                  stockamount, cost, sellPrice, None, None),
-                    data.Posting(self.pnlAccount.format(currency=row['c_change'], isin=row['isin']),
-                                 None,        None,      None, None, None)
+                    data.Posting(self.pnlAccount.format(currency=row['c_change'], isin=row['isin'], ticker=ticker),
+                                 None,        None, None,      None, None)
                 ]
 
         TT = namedtuple('TT', ['doc', 'descriptor', 'handler'])
@@ -470,6 +474,8 @@ class DegiroAccount(importer.ImporterProtocol):
                         prio=np
                     match = True
                     break
+            if not match:
+                logging.log(logging.WARNING, f"line={i2l(idx)} no posting handler description={row['description']}")
 
         for bc in balances:
             b=balances[bc]
