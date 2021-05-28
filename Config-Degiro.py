@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 from beancount.ingest import extract
-from degiro import DegiroAccount
+from beancount_degiro import DegiroAccount, DegiroDE
 
 # example importer config for Degiro importer
 # use with "bean-extract ConfigDegiro.py /path/to/Account.csv
 
 
 account = DegiroAccount(
-    language='de', # defines regular expressions for transaction descriptions
-                   # Feel free to add your favourite language <lang> to degiro_<lang>.py
+    language = DegiroDE, # defines descriptors for transaction descriptions
+                         # Feel free to add your favourite language to degiro_lang.py
 
-    currency = 'EUR',           # main currency
+    currency = 'EUR',    # main currency
                                                                               # Available tokens:
     LiquidityAccount       = 'Aktiva:Invest:Degiro:{currency}',               # {currency}
     StocksAccount          = 'Aktiva:Invest:Aktien:Degiro:{ticker}',          # {isin}, {ticker}

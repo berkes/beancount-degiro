@@ -17,8 +17,7 @@ from beancount.core import position
 from beancount.ingest import importer
 import uuid
 from collections import namedtuple
-from stockutil import StockSearch
-import degiro_de
+from .stockutil import StockSearch
 
 class InvalidFormatError(Exception):
     def __init__(self, msg):
@@ -40,13 +39,14 @@ FIELDS_EN = (
 )
 
 class DegiroAccount(importer.ImporterProtocol):
-    def __init__(self, language, LiquidityAccount, StocksAccount, SplitsAccount, FeesAccount, InterestAccount,
+    def __init__(self, language, LiquidityAccount, StocksAccount, SplitsAccount,
+                 FeesAccount, InterestAccount,
                  PnLAccount, DivIncomeAccount, WhtAccount,
                  ExchangeRoundingErrorAccount,
                  DepositAccount=None,
                  TickerCacheFile=None,
                  currency='EUR', file_encoding='utf-8' ):
-        self.language = language
+        self.l = language()
         self.currency = currency
         self.file_encoding = file_encoding
 
@@ -67,8 +67,8 @@ class DegiroAccount(importer.ImporterProtocol):
         self._balance_date = None
 
         self._fx_match_tolerance_percent = 2.0
-        if self.language == 'de':
-            self.l = degiro_de
+        if not self.l:
+            logging.log(logging.ERROR, f'Unsupported or unset language {self.l}')
 
     def name(self):
         return f'{self.__class__.__name__} importer'
@@ -143,7 +143,7 @@ class DegiroAccount(importer.ImporterProtocol):
 
         # Drop 'cash sweep transfer' rows. These are transfers between the flatex bank account
         # and Degiro, and have no effect on the balance
-        df=df[df['description'].map(lambda d: not re.match(self.l.cst.re, d))]
+        df=df[df['description'].map(lambda d: not self.l.cst(d))]
 
 
         # Skipping rows with no change
@@ -154,7 +154,7 @@ class DegiroAccount(importer.ImporterProtocol):
 
 
         # Match currency exchanges and provide uuid if none
-        exchanges = df[df['description'].map(lambda d: bool(re.match(self.l.change.re, d)))]
+        exchanges = df[df['description'].map(lambda d: bool(self.l.change(d)))]
         # ci1 cr1 ci1 cr2 are indices and rows of matching currency exchanges
         # we assume that 2 consecutive exchange lines belong to each other
         (ci1, cr1) = (None, None)
@@ -227,24 +227,24 @@ class DegiroAccount(importer.ImporterProtocol):
         for idx, row in dfn.iterrows():
             # liquidity fund price changes and fees: single line pro transaction
             d=row['description']
-            if (re.match(self.l.liquidity_fund.re, d)
+            if (self.l.liquidity_fund(d)
                 or
-                re.match(self.l.fees.re, d)
+                self.l.fees(d)
                 or
-                re.match(self.l.payout.re, d)
+                self.l.payout(d)
                 or
-                re.match(self.l.interest.re, d)
+                self.l.interest(d)
                 or
-                re.match(self.l.deposit.re, d) ):
+                self.l.deposit(d)):
                 df.loc[idx, 'uuid'] = str(uuid.uuid1())
                 continue
 
-            if re.match(self.l.dividend.re, row['description']):
+            if self.l.dividend(row['description']):
                 # Lookup other legs of dividend transaction
                 # 1. Dividend tax: ISIN match
                 mdfn=dfn[(dfn['isin']==row['isin'])
                          & (dfn['datetime'] > row['datetime']-timedelta(days=31)) & (dfn['datetime'] < row['datetime']+timedelta(days=5) )
-                         & (dfn['description'].map(lambda d: bool(re.match(self.l.dividend_tax.re, d))))]
+                         & (dfn['description'].map(lambda d: bool(self.l.dividend_tax(d))))]
                 muuid=str(uuid.uuid1())
                 for midx, mrow in mdfn.iterrows():
                     if pd.notna(df.loc[midx, 'uuid']):
@@ -254,7 +254,7 @@ class DegiroAccount(importer.ImporterProtocol):
                     logging.log(logging.WARNING, f"line={i2l(idx)} ambigous generated uuid")
                 df.loc[idx, 'uuid'] = muuid
                 continue
-            if re.match(self.l.split.re, row['description']):
+            if self.l.split(row['description']):
                 if idx_split is None:
                     idx_split = idx
                     continue
@@ -268,7 +268,7 @@ class DegiroAccount(importer.ImporterProtocol):
                 df.loc[idx_split, 'uuid'] = df.loc[idx, 'uuid'] = muuid
                 idx_split=None
                 continue
-            if re.match(self.l.buy.re, row['description']):
+            if self.l.buy(row['description']):
                 # transition between exchanges: buy and sell the same amount for the same price
                 mdfn=dfn[(dfn['datetime']==row['datetime']) & (dfn['isin']==row['isin'])
                          & (dfn['change']==-row['change']) & (dfn['c_change']==row['c_change'])]
@@ -324,22 +324,22 @@ class DegiroAccount(importer.ImporterProtocol):
 
         def handle_buy(vals, row, amount):
             cost = position.CostSpec(
-                number_per=vals['price'],
+                number_per=vals.price,
                 number_total=None,
-                currency=vals['currency'],
+                currency=vals.currency,
                 date=row['datetime'].date(),
                 label=None,
                 merge=False)
 
             ticker=stocks.isin2ticker(row['isin'])
-            stockamount = Amount(vals['quantity'],ticker)
+            stockamount = Amount(vals.quantity,ticker)
 
-            if vals['split']:
+            if vals.split:
                 account = self.splitsAccount
                 tdesc=f"SPLIT {row['product']}"
             else:
                 account = self.stocksAccount
-                tdesc=f"BUY {row['product']} {stockamount.number} {ticker} @ {vals['price']} {vals['currency']}"
+                tdesc=f"BUY {row['product']} {stockamount.number} {ticker} @ {vals.price} {vals.currency}"
 
             return 1, ticker, tdesc, \
                 [data.Posting(account.format(isin=row['isin'], ticker=ticker), stockamount, cost, None, None, None )]
@@ -347,7 +347,7 @@ class DegiroAccount(importer.ImporterProtocol):
         def handle_sell(vals, row, amount):
 
             ticker=stocks.isin2ticker(row['isin'])
-            stockamount = Amount(-vals['quantity'], ticker)
+            stockamount = Amount(-vals.quantity, ticker)
 
             cost=position.CostSpec(
                 number_per=None,
@@ -357,14 +357,14 @@ class DegiroAccount(importer.ImporterProtocol):
                 label=None,
                 merge=False)
 
-            sellPrice=Amount(vals['price'], vals['currency'])
+            sellPrice=Amount(vals.price, vals.currency)
 
-            if vals['split']:
+            if vals.split:
                 account = self.splitsAccount
                 tdesc=f"SPLIT {row['product']} {ticker}"
             else:
                 account = self.stocksAccount
-                tdesc=f"SELL {row['product']} {stockamount.number} {ticker} @ {vals['price']} {vals['currency']}"
+                tdesc=f"SELL {row['product']} {stockamount.number} {ticker} @ {vals.price} {vals.currency}"
 
             return 1, ticker, tdesc, \
                 [
@@ -442,7 +442,7 @@ class DegiroAccount(importer.ImporterProtocol):
                 # prev_row was the last
                 break
 
-            if re.match(self.l.deposit.re, row['description']) and self.depositAccount is None:
+            if self.l.deposit(row['description']) and self.depositAccount is None:
                 continue
 
             amount = Amount(row['change'],row['c_change'])
@@ -461,13 +461,11 @@ class DegiroAccount(importer.ImporterProtocol):
 
             match = False
             for t in trtypes:
-                m=re.match(t.descriptor.re, row['description'])
+                m=t.descriptor(row['description'])
                 if m:
-                    mv = None
-                    if t.descriptor.vals:
-                        mv = t.descriptor.vals(m)
-                    (np, npay, nd, npostings) = t.handler(mv, row, amount)
+                    (np, npay, nd, npostings) = t.handler(m.vals, row, amount)
                     postings += npostings
+                    # Now set transaction description if posting is more important than the ones before
                     if np < prio:
                         payee=npay
                         description=nd
