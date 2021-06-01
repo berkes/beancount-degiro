@@ -124,19 +124,24 @@ class DegiroAccount(importer.ImporterProtocol):
         def i2l(i:int):
             return i+2
 
-        prev_idx=None
+        # put empty string if nan in these columns to ease sanitization below
+        df.fillna(value={'orderid':'', 'product':'', 'description':''}, inplace=True)
+        fraction=None
         for idx, row in df.iterrows():
             if pd.isna(row['datetime']):
-                if prev_idx is None:
-                    # First row is already broken
-                    continue
-                if pd.notna(row['product']):
-                    df.at[prev_idx, 'product'] += " "+row['product']
-                if pd.notna(row['description']):
-                    df.at[prev_idx, 'description'] += " "+row['description']
-                if pd.notna(row['orderid']):
-                    df.at[prev_idx, 'orderid'] += row['orderid']
-            prev_idx=idx
+                if fraction is not None:
+                    logging.log(logging.WARNING, f'line={i2l(fi)} too many broken lines')
+                fraction=row
+                continue
+
+            if fraction is not None:
+                if pd.notna(fraction['product']):
+                    df.at[idx, 'product'] += " "+fraction['product']
+                if pd.notna(fraction['description']):
+                    df.at[idx, 'description'] += " "+fraction['description']
+                if pd.notna(fraction['orderid']):
+                    df.at[idx, 'orderid'] += fraction['orderid']
+                fraction=None
 
         # drop rows with empty datetime or empty change
         df.dropna(subset=['datetime', 'change'], inplace=True)
@@ -195,21 +200,21 @@ class DegiroAccount(importer.ImporterProtocol):
                 continue
 
             # check if uuid match
-            if pd.isna(b['uuid']) != pd.isna(f['uuid']) or ( pd.notna(f['uuid']) and f['uuid'] != b['uuid']):
+            if f['uuid'] != b['uuid']:
                 logging.log(logging.WARNING, f'line={i2l(bi)} line={i2l(fi)} conversion orderid mismatch')
                 # skip first row; continue with second
                 (ci1, cr1) = (ci2, cr2)
                 continue
-            elif pd.isna(f['uuid']):
+            elif f['uuid'] == '':
                 # Generate uuid to match conversion later
                 muuid=str(uuid.uuid1())
                 df.loc[bi, 'uuid'] = muuid
                 df.loc[fi, 'uuid'] = muuid
 
             df.loc[bi, '__FX'] = Amount(f['FX'], f['c_change'])
-            if abs(fx_error) >= 0.01:
-                # error at least 1 cent in whatever currency:
+            if abs(fx_error) >= 0.005:
                 # apply a correction posting to avoid balance error
+                # FIXME use per-transaction cumulated precision
                 df.loc[fi, '__FX_corr'] = -fx_error
 
             ci1 = None
@@ -220,7 +225,7 @@ class DegiroAccount(importer.ImporterProtocol):
 
         # Match postings with no order id
 
-        dfn = df[pd.isna(df['uuid'])]
+        dfn = df[df['uuid']=='']
 
         idx_split = None # Consecutive stock split rows are matched
         # Generate uuid for transactions without orderid
@@ -247,10 +252,10 @@ class DegiroAccount(importer.ImporterProtocol):
                          & (dfn['description'].map(lambda d: bool(self.l.dividend_tax(d))))]
                 muuid=str(uuid.uuid1())
                 for midx, mrow in mdfn.iterrows():
-                    if pd.notna(df.loc[midx, 'uuid']):
+                    if df.loc[midx, 'uuid'] != '':
                         logging.log(logging.WARNING, f"line={i2l(midx)} ambigous generated uuid")
                     df.loc[midx, 'uuid'] = muuid
-                if pd.notna(df.loc[idx, 'uuid']):
+                if df.loc[idx, 'uuid'] != '':
                     logging.log(logging.WARNING, f"line={i2l(idx)} ambigous generated uuid")
                 df.loc[idx, 'uuid'] = muuid
                 continue
@@ -282,26 +287,26 @@ class DegiroAccount(importer.ImporterProtocol):
 
         stocks=StockSearch(self.tickerCacheFile)
 
-        def handle_fees(vals, row, amount ):
+        def handle_fees(vals, row, amount, ctx):
             return 2, "Degiro", f"Fee: {row['description']}", \
                 [data.Posting(self.feesAccount.format(currency=amount.currency), -amount, None, None, None, None )]
 
-        def handle_liquidity_fund(vals, row, amount ):
+        def handle_liquidity_fund(vals, row, amount, ctx):
             return 2, "Degiro", "Liquidity fund price change", \
                 [data.Posting(self.interestAccount.format(currency=amount.currency), -amount, None, None, None, None )]
 
-        def handle_interest(vals, row, amount ):
+        def handle_interest(vals, row, amount, ctx):
             return 2, "Degiro", f"Interest: {row['description']}", \
                 [data.Posting(self.interestAccount.format(currency=amount.currency), -amount, None, None, None, None )]
 
-        def handle_deposit(vals, row, amount):
+        def handle_deposit(vals, row, amount, ctx):
             if self.depositAccount is None:
                 # shall not happen anyway
                 return PRIO_LAST, "", []
             return 2, "self", "Deposit/Withdrawal",  \
                 [data.Posting(self.depositAccount.format(currency=amount.currency), -amount, None, None, None, None )]
 
-        def handle_dividend(vals, row, amount ):
+        def handle_dividend(vals, row, amount, ctx):
             ticker=stocks.isin2ticker(row['isin'])
             return 1, row['isin'], f"Dividend {ticker}", \
                 [
@@ -309,7 +314,7 @@ class DegiroAccount(importer.ImporterProtocol):
                                  -amount, None, None, None, None )
                 ]
 
-        def handle_dividend_tax(vals, row, amount ):
+        def handle_dividend_tax(vals, row, amount, ctx):
             ticker=stocks.isin2ticker(row['isin'])
             return 2, row['isin'], f"Dividend tax {ticker}", \
                 [
@@ -317,12 +322,12 @@ class DegiroAccount(importer.ImporterProtocol):
                                  -amount, None, None, None, None )
                 ]
 
-        def handle_change(vals, row, amount ):
+        def handle_change(vals, row, amount, ctx):
             # No extra posting; currency exchange has already two legs in the cvs
             # Just make a pretty description
             return 2, "Degiro", f"Currency exchange", []
 
-        def handle_buy(vals, row, amount):
+        def handle_buy(vals, row, amount, ctx):
             cost = position.CostSpec(
                 number_per=vals.price,
                 number_total=None,
@@ -344,7 +349,7 @@ class DegiroAccount(importer.ImporterProtocol):
             return 1, ticker, tdesc, \
                 [data.Posting(account.format(isin=row['isin'], ticker=ticker), stockamount, cost, None, None, None )]
 
-        def handle_sell(vals, row, amount):
+        def handle_sell(vals, row, amount, ctx):
 
             ticker=stocks.isin2ticker(row['isin'])
             stockamount = Amount(-vals.quantity, ticker)
@@ -366,13 +371,15 @@ class DegiroAccount(importer.ImporterProtocol):
                 account = self.stocksAccount
                 tdesc=f"SELL {row['product']} {stockamount.number} {ticker} @ {vals.price} {vals.currency}"
 
-            return 1, ticker, tdesc, \
-                [
-                    data.Posting(account.format(isin=row['isin'], ticker=ticker),
-                                 stockamount, cost, sellPrice, None, None),
-                    data.Posting(self.pnlAccount.format(currency=row['c_change'], isin=row['isin'], ticker=ticker),
-                                 None,        None, None,      None, None)
-                ]
+            postings = [data.Posting(account.format(isin=row['isin'], ticker=ticker),
+                                     stockamount, cost, sellPrice, None, None)]
+            if 'pnl' not in ctx:
+                # pnl posting append only once per transaction
+                ctx['pnl'] = True
+                postings.append(data.Posting(self.pnlAccount.format(currency=row['c_change'], isin=row['isin'], ticker=ticker),
+                                             None, None, None, None, None))
+
+            return 1, ticker, tdesc, postings
 
         TT = namedtuple('TT', ['doc', 'descriptor', 'handler'])
 
@@ -402,6 +409,7 @@ class DegiroAccount(importer.ImporterProtocol):
         prio=PRIO_LAST
         description=NO_DESCRIPTION
         payee=NO_PAYEE
+        ctx={}
 
         balances={}
 
@@ -411,19 +419,17 @@ class DegiroAccount(importer.ImporterProtocol):
             prev_idx = idx
             idx, row = next(it, [None, None])
 
-            if row is not None and not row['c_balance'] in balances:
+            if row is not None:
                 balances[row['c_balance']]={'line': i2l(idx), 'balance': row['balance'], 'date': row['datetime'].date()}
 
-            if row is not None and pd.isna(row['uuid']):
+            if row is not None and row['uuid'] == '':
                 logging.log(logging.WARNING, f"line={i2l(idx)} no uuid description={row['description']}")
 
-            if idx is None or ( prev_row is not None and (pd.isna(prev_row['uuid']) or row['uuid'] != prev_row['uuid'])):
+            if idx is None or ( prev_row is not None and (row['uuid'] != prev_row['uuid'])):
                 # previous transaction completed
                 if postings:
 
-                    uuid_meta={}
-                    if pd.notna(prev_row['uuid']):
-                        uuid_meta = {'uuid':prev_row['uuid']}
+                    uuid_meta = {'uuid':prev_row['uuid']}
                     entries.append(data.Transaction(data.new_metadata(_file.name,i2l(prev_idx), uuid_meta),
                                                     prev_row['datetime'].date(),
                                                     self.FLAG,
@@ -437,6 +443,7 @@ class DegiroAccount(importer.ImporterProtocol):
                     prio = PRIO_LAST
                     description=NO_DESCRIPTION
                     payee=NO_PAYEE
+                    ctx={}
 
             if idx is None:
                 # prev_row was the last
@@ -463,7 +470,7 @@ class DegiroAccount(importer.ImporterProtocol):
             for t in trtypes:
                 m=t.descriptor(row['description'])
                 if m:
-                    (np, npay, nd, npostings) = t.handler(m.vals, row, amount)
+                    (np, npay, nd, npostings) = t.handler(m.vals, row, amount, ctx)
                     postings += npostings
                     # Now set transaction description if posting is more important than the ones before
                     if np < prio:

@@ -1,6 +1,7 @@
 import requests as r
 import pickle
 import logging
+import re
 
 class StockSearch(object):
     def __init__(self, cachefile = None):
@@ -38,6 +39,7 @@ class StockSearch(object):
             ticker=isin  # fallback
         else:
             ticker = js['quotes'][0]['symbol']
+            ticker = re.sub('\.', '-', ticker)
             logging.log(logging.INFO, f"ISIN {isin} found, ticker: {ticker}")
 
         self.cache[isin]=ticker
