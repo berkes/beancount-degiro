@@ -212,10 +212,7 @@ class DegiroAccount(importer.ImporterProtocol):
                 df.loc[fi, 'uuid'] = muuid
 
             df.loc[bi, '__FX'] = Amount(f['FX'], f['c_change'])
-            if abs(fx_error) >= 0.005:
-                # apply a correction posting to avoid balance error
-                # FIXME use per-transaction cumulated precision
-                df.loc[fi, '__FX_corr'] = -fx_error
+            df.loc[fi, '__FX_corr'] = -fx_error
 
             ci1 = None
             cr1 = None
@@ -323,6 +320,13 @@ class DegiroAccount(importer.ImporterProtocol):
                 ]
 
         def handle_change(vals, row, amount, ctx):
+            # Cumulate FX correction for use in transaction
+            if pd.notna(row['__FX_corr']):
+                if '__FX_corr' not in ctx:
+                    ctx['__FX_corr'] = {}
+                if row['c_change'] not in ctx['__FX_corr']:
+                    ctx['__FX_corr'][row['c_change']] = 0
+                ctx['__FX_corr'][row['c_change']] += row['__FX_corr']
             # No extra posting; currency exchange has already two legs in the cvs
             # Just make a pretty description
             return 2, "Degiro", f"Currency exchange", []
@@ -429,6 +433,16 @@ class DegiroAccount(importer.ImporterProtocol):
                 # previous transaction completed
                 if postings:
 
+                    if '__FX_corr' in ctx:
+                        for currency in ctx['__FX_corr']:
+                            # Beancount ignores imprecision less than the half of least significant digit
+                            if abs(ctx['__FX_corr'][currency]) >= 0.005:
+                                postings.append(
+                                    data.Posting(
+                                        self.exchangeRoundingErrorAccount.format(currency=currency),
+                                        Amount(ctx['__FX_corr'][currency], currency), None, None, None, None
+                                    )
+                                )
                     uuid_meta = {'uuid':prev_row['uuid']}
                     entries.append(data.Transaction(data.new_metadata(_file.name,i2l(prev_idx), uuid_meta),
                                                     prev_row['datetime'].date(),
@@ -457,14 +471,6 @@ class DegiroAccount(importer.ImporterProtocol):
             fxprice = row['__FX'] if pd.notna(row['__FX']) else None
 
             postings.append(data.Posting(self.liquidityAccount.format(currency=row['c_change']), amount, None, fxprice, None, None ))
-
-            if pd.notna(row['__FX_corr']):
-                postings.append(
-                    data.Posting(
-                        self.exchangeRoundingErrorAccount.format(currency=row['c_change']),
-                        Amount(row['__FX_corr'], row['c_change']), None, None, None, None
-                    )
-                )
 
             match = False
             for t in trtypes:
