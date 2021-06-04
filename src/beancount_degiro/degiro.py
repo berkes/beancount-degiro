@@ -284,6 +284,13 @@ class DegiroAccount(importer.ImporterProtocol):
 
         stocks=StockSearch(self.tickerCacheFile)
 
+        def add_corr(ctx, corr, currency):
+            if 'corr' not in ctx:
+                ctx['corr'] = {}
+            if currency not in ctx['corr']:
+                ctx['corr'][currency] = 0
+            ctx['corr'][currency] += corr
+
         def handle_fees(vals, row, amount, ctx):
             return 2, "Degiro", f"Fee: {row['description']}", \
                 [data.Posting(self.feesAccount.format(currency=amount.currency), -amount, None, None, None, None )]
@@ -322,11 +329,7 @@ class DegiroAccount(importer.ImporterProtocol):
         def handle_change(vals, row, amount, ctx):
             # Cumulate FX correction for use in transaction
             if pd.notna(row['__FX_corr']):
-                if '__FX_corr' not in ctx:
-                    ctx['__FX_corr'] = {}
-                if row['c_change'] not in ctx['__FX_corr']:
-                    ctx['__FX_corr'][row['c_change']] = 0
-                ctx['__FX_corr'][row['c_change']] += row['__FX_corr']
+                add_corr(ctx, row['__FX_corr'], row['c_change'])
             # No extra posting; currency exchange has already two legs in the cvs
             # Just make a pretty description
             return 2, "Degiro", f"Currency exchange", []
@@ -349,6 +352,14 @@ class DegiroAccount(importer.ImporterProtocol):
             else:
                 account = self.stocksAccount
                 tdesc=f"BUY {row['product']} {stockamount.number} {ticker} @ {vals.price} {vals.currency}"
+
+            # calculate total cost rounding error
+            if (vals.currency != row['c_change']):
+                # FIXME line number missing
+                logging.log(logging.WARNING, f"line={i2l(0)} currency price:{vals.currency}, change:{row['c_change']} mismatch")
+            else:
+                corr=-(vals.quantity * vals.price + row['change'])
+                add_corr(ctx, corr, row['c_change'])
 
             return 1, ticker, tdesc, \
                 [data.Posting(account.format(isin=row['isin'], ticker=ticker), stockamount, cost, None, None, None )]
@@ -382,6 +393,14 @@ class DegiroAccount(importer.ImporterProtocol):
                 ctx['pnl'] = True
                 postings.append(data.Posting(self.pnlAccount.format(currency=row['c_change'], isin=row['isin'], ticker=ticker),
                                              None, None, None, None, None))
+
+            # calculate total cost rounding error
+            if (vals.currency != row['c_change']):
+                # FIXME line number missing
+                logging.log(logging.WARNING, f"line={i2l(0)} currency price:{vals.currency}, change:{row['c_change']} mismatch")
+            else:
+                corr=-(-vals.quantity * vals.price + row['change'])
+                add_corr(ctx, corr, row['c_change'])
 
             return 1, ticker, tdesc, postings
 
@@ -423,8 +442,14 @@ class DegiroAccount(importer.ImporterProtocol):
             prev_idx = idx
             idx, row = next(it, [None, None])
 
+
             if row is not None:
                 balances[row['c_balance']]={'line': i2l(idx), 'balance': row['balance'], 'date': row['datetime'].date()}
+
+                #sbalance=b[row['c_balance']] + row['change']
+                #if sbalance != row['balance']:
+                #    logging.log(logging.WARNING, f"line={i2l(idx)} balance mismatch shall={sbalance} is={row['balance']}")
+                #b[row['c_balance']] = row['balance']
 
             if row is not None and row['uuid'] == '':
                 logging.log(logging.WARNING, f"line={i2l(idx)} no uuid description={row['description']}")
@@ -433,14 +458,14 @@ class DegiroAccount(importer.ImporterProtocol):
                 # previous transaction completed
                 if postings:
 
-                    if '__FX_corr' in ctx:
-                        for currency in ctx['__FX_corr']:
+                    if 'corr' in ctx:
+                        for currency in ctx['corr']:
                             # Beancount ignores imprecision less than the half of least significant digit
-                            if abs(ctx['__FX_corr'][currency]) >= 0.005:
+                            if abs(ctx['corr'][currency]) >= 0.005:
                                 postings.append(
                                     data.Posting(
                                         self.exchangeRoundingErrorAccount.format(currency=currency),
-                                        Amount(ctx['__FX_corr'][currency], currency), None, None, None, None
+                                        Amount(ctx['corr'][currency], currency), None, None, None, None
                                     )
                                 )
                     uuid_meta = {'uuid':prev_row['uuid']}
