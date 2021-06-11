@@ -88,7 +88,7 @@ class DegiroAccount(importer.ImporterProtocol):
 
     def extract(self, _file, existing_entries=None):
         root=logging.getLogger()
-        root.setLevel(logging.DEBUG)
+        root.setLevel(logging.INFO)
         handler = logging.StreamHandler(sys.stderr)
         #handler.setLevel(logging.DEBUG)
         handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s: %(message)s'))
@@ -150,13 +150,8 @@ class DegiroAccount(importer.ImporterProtocol):
         # and Degiro, and have no effect on the balance
         df=df[df['description'].map(lambda d: not self.l.cst(d))]
 
-
-        # Skipping rows with no change
-        df=df[df['change'] != 0]
-
         # Copy orderid as a new column uuid
         df['uuid']=df['orderid']
-
 
         # Match currency exchanges and provide uuid if none
         exchanges = df[df['description'].map(lambda d: bool(self.l.change(d)))]
@@ -266,7 +261,7 @@ class DegiroAccount(importer.ImporterProtocol):
                     idx_split=idx  # retry matching this row with following split row
                     continue
                 muuid=str(uuid.uuid1())
-                logging.log(logging.INFO, f"line={i2l(idx_split)} line={i2l(idx)} marking split uuid={muuid}")
+                logging.log(logging.DEBUG, f"line={i2l(idx_split)} line={i2l(idx)} marking split uuid={muuid}")
                 df.loc[idx_split, 'uuid'] = df.loc[idx, 'uuid'] = muuid
                 idx_split=None
                 continue
@@ -284,12 +279,10 @@ class DegiroAccount(importer.ImporterProtocol):
 
         stocks=StockSearch(self.tickerCacheFile)
 
-        def add_corr(ctx, corr, currency):
-            if 'corr' not in ctx:
-                ctx['corr'] = {}
-            if currency not in ctx['corr']:
-                ctx['corr'][currency] = 0
-            ctx['corr'][currency] += corr
+        def add_corr(target, corr, currency):
+            if currency not in target:
+                target[currency] = 0
+            target[currency] += corr
 
         def handle_fees(vals, row, amount, ctx):
             return 2, "Degiro", f"Fee: {row['description']}", \
@@ -329,7 +322,7 @@ class DegiroAccount(importer.ImporterProtocol):
         def handle_change(vals, row, amount, ctx):
             # Cumulate FX correction for use in transaction
             if pd.notna(row['__FX_corr']):
-                add_corr(ctx, row['__FX_corr'], row['c_change'])
+                add_corr(ctx['corr'], row['__FX_corr'], row['c_change'])
             # No extra posting; currency exchange has already two legs in the cvs
             # Just make a pretty description
             return 2, "Degiro", f"Currency exchange", []
@@ -359,7 +352,7 @@ class DegiroAccount(importer.ImporterProtocol):
                 logging.log(logging.WARNING, f"line={i2l(0)} currency price:{vals.currency}, change:{row['c_change']} mismatch")
             else:
                 corr=-(vals.quantity * vals.price + row['change'])
-                add_corr(ctx, corr, row['c_change'])
+                add_corr(ctx['corr'], corr, row['c_change'])
 
             return 1, ticker, tdesc, \
                 [data.Posting(account.format(isin=row['isin'], ticker=ticker), stockamount, cost, None, None, None )]
@@ -388,7 +381,7 @@ class DegiroAccount(importer.ImporterProtocol):
 
             postings = [data.Posting(account.format(isin=row['isin'], ticker=ticker),
                                      stockamount, cost, sellPrice, None, None)]
-            if 'pnl' not in ctx:
+            if not ctx['pnl']:
                 # pnl posting append only once per transaction
                 ctx['pnl'] = True
                 postings.append(data.Posting(self.pnlAccount.format(currency=row['c_change'], isin=row['isin'], ticker=ticker),
@@ -400,7 +393,7 @@ class DegiroAccount(importer.ImporterProtocol):
                 logging.log(logging.WARNING, f"line={i2l(0)} currency price:{vals.currency}, change:{row['c_change']} mismatch")
             else:
                 corr=-(-vals.quantity * vals.price + row['change'])
-                add_corr(ctx, corr, row['c_change'])
+                add_corr(ctx['corr'], corr, row['c_change'])
 
             return 1, ticker, tdesc, postings
 
@@ -432,7 +425,9 @@ class DegiroAccount(importer.ImporterProtocol):
         prio=PRIO_LAST
         description=NO_DESCRIPTION
         payee=NO_PAYEE
-        ctx={}
+        def CTX_INIT():
+            return {'corr': {}, 'bcorr': {}, 'pnl': False}
+        ctx = CTX_INIT()
 
         balances={}
 
@@ -442,32 +437,31 @@ class DegiroAccount(importer.ImporterProtocol):
             prev_idx = idx
             idx, row = next(it, [None, None])
 
-
-            if row is not None:
-                balances[row['c_balance']]={'line': i2l(idx), 'balance': row['balance'], 'date': row['datetime'].date()}
-
-                #sbalance=b[row['c_balance']] + row['change']
-                #if sbalance != row['balance']:
-                #    logging.log(logging.WARNING, f"line={i2l(idx)} balance mismatch shall={sbalance} is={row['balance']}")
-                #b[row['c_balance']] = row['balance']
-
             if row is not None and row['uuid'] == '':
                 logging.log(logging.WARNING, f"line={i2l(idx)} no uuid description={row['description']}")
 
             if idx is None or ( prev_row is not None and (row['uuid'] != prev_row['uuid'])):
                 # previous transaction completed
-                if postings:
+                for currency in ctx['corr']:
+                    # Beancount ignores imprecision less than the half of least significant digit
+                    if abs(ctx['corr'][currency]) >= 0.005:
+                        postings.append(
+                            data.Posting(
+                                self.exchangeRoundingErrorAccount.format(currency=currency),
+                                Amount(ctx['corr'][currency], currency), None, None, None, None
+                            )
+                        )
+                # now search for balance imprecisions
+                for currency in ctx['bcorr']:
+                    if ctx['bcorr'][currency] != 0:
+                        postings.append(
+                            data.Posting(
+                                self.liquidityAccount.format(currency=currency),
+                                Amount(ctx['bcorr'][currency], currency), None, None, None, None
+                            )
+                        )
 
-                    if 'corr' in ctx:
-                        for currency in ctx['corr']:
-                            # Beancount ignores imprecision less than the half of least significant digit
-                            if abs(ctx['corr'][currency]) >= 0.005:
-                                postings.append(
-                                    data.Posting(
-                                        self.exchangeRoundingErrorAccount.format(currency=currency),
-                                        Amount(ctx['corr'][currency], currency), None, None, None, None
-                                    )
-                                )
+                if postings:
                     uuid_meta = {'uuid':prev_row['uuid']}
                     entries.append(data.Transaction(data.new_metadata(_file.name,i2l(prev_idx), uuid_meta),
                                                     prev_row['datetime'].date(),
@@ -478,15 +472,26 @@ class DegiroAccount(importer.ImporterProtocol):
                                                     data.EMPTY_SET, # links
                                                     postings
                                                     ))
-                    postings = []
-                    prio = PRIO_LAST
-                    description=NO_DESCRIPTION
-                    payee=NO_PAYEE
-                    ctx={}
+                postings = []
+                prio = PRIO_LAST
+                description=NO_DESCRIPTION
+                payee=NO_PAYEE
+                ctx=CTX_INIT()
 
             if idx is None:
                 # prev_row was the last
                 break
+
+            # Check balance
+            if row['c_balance'] in balances:
+                #  Difference between reported and calculated account balance:
+                bdiff = row['balance'] - (balances[row['c_balance']]['balance'] + row['change'])
+                if bdiff != 0:
+                    logging.log(logging.DEBUG, f"line={i2l(idx)} applying balance correction {bdiff} {row['c_balance']}")
+                    add_corr(ctx['bcorr'], bdiff, row['c_balance'])
+                    add_corr(ctx['corr'], -bdiff, row['c_balance'])
+
+            balances[row['c_balance']]={'line': i2l(idx), 'balance': row['balance'], 'date': row['datetime'].date()}
 
             if self.l.deposit(row['description']) and self.depositAccount is None:
                 continue
