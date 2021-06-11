@@ -33,7 +33,7 @@ class DegiroDE:
 
 
     def fmt_number(self, value: str) -> Decimal:
-        if pd.isna(value):
+        if value == '':
             return None
         thousands_sep = '.'
         decimal_sep = ','
@@ -51,13 +51,13 @@ class DegiroDE:
     # Descriptors for various posting types to book them automatically
 
     def liquidity_fund(self, d):
-        return self.process('^Geldmarktfonds ((Preisänderung)|(Umwandlung))', d)
+        return self.process('^Geldmarktfonds (Preisänderung|Umwandlung)', d)
 
     def fees(self, d):
-        return self.process('^(Transaktionsgebühr)|(Gebühr für Realtimekurse)|(Einrichtung von Handelsmodalitäten)', d)
+        return self.process('^Transaktionsgebühr|(Gebühr für Realtimekurse)|(Einrichtung von Handelsmodalitäten)', d)
 
     def deposit(self, d):
-        return self.process('((SOFORT )?Einzahlung)|(Auszahlung)', d)
+        return self.process('(((SOFORT|flatex) )?Einzahlung)|(Auszahlung)', d)
 
     def buy(self, d):
         return self.process('^(AKTIENSPLIT: )?Kauf ([\d.]+) zu je ([\d,]+) (\w+)', d,
@@ -74,13 +74,13 @@ class DegiroDE:
                             )
 
     def dividend(self, d):
-        return self.process('((Dividende)|(Ausschüttung.*))$', d)
+        return self.process('(Dividende|(Ausschüttung.*))$', d)
 
     def dividend_tax(self, d):
         return self.process('Dividendensteuer', d)
 
     def cst(self, d):
-        return self.process('(flatex)|(Degiro) Cash Sweep Transfer', d)
+        return self.process('(flatex|Degiro) Cash Sweep Transfer', d)
 
     def interest(self, d):
         return self.process('Flatex Interest', d)
