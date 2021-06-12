@@ -293,26 +293,26 @@ class DegiroAccount(importer.ImporterProtocol):
                 target[currency] = 0
             target[currency] += corr
 
-        def handle_fees(vals, row, amount, ctx):
+        def handle_fees(vals, row, amount, line, ctx):
             return 2, "Degiro", f"Fee: {row['description']}", \
                 [data.Posting(self.feesAccount.format(currency=amount.currency), -amount, None, None, None, None )]
 
-        def handle_liquidity_fund(vals, row, amount, ctx):
+        def handle_liquidity_fund(vals, row, amount, line, ctx):
             return 2, "Degiro", "Liquidity fund price change", \
                 [data.Posting(self.interestAccount.format(currency=amount.currency), -amount, None, None, None, None )]
 
-        def handle_interest(vals, row, amount, ctx):
+        def handle_interest(vals, row, amount, line, ctx):
             return 2, "Degiro", f"Interest: {row['description']}", \
                 [data.Posting(self.interestAccount.format(currency=amount.currency), -amount, None, None, None, None )]
 
-        def handle_deposit(vals, row, amount, ctx):
+        def handle_deposit(vals, row, amount, line, ctx):
             if self.depositAccount is None:
                 # shall not happen anyway
                 return PRIO_LAST, "", []
             return 2, "self", "Deposit/Withdrawal",  \
                 [data.Posting(self.depositAccount.format(currency=amount.currency), -amount, None, None, None, None )]
 
-        def handle_dividend(vals, row, amount, ctx):
+        def handle_dividend(vals, row, amount, line, ctx):
             ticker=stocks.isin2ticker(row['isin'])
             return 1, row['isin'], f"Dividend {ticker}", \
                 [
@@ -320,7 +320,7 @@ class DegiroAccount(importer.ImporterProtocol):
                                  -amount, None, None, None, None )
                 ]
 
-        def handle_dividend_tax(vals, row, amount, ctx):
+        def handle_dividend_tax(vals, row, amount, line, ctx):
             ticker=stocks.isin2ticker(row['isin'])
             return 2, row['isin'], f"Dividend tax {ticker}", \
                 [
@@ -328,7 +328,7 @@ class DegiroAccount(importer.ImporterProtocol):
                                  -amount, None, None, None, None )
                 ]
 
-        def handle_change(vals, row, amount, ctx):
+        def handle_change(vals, row, amount, line, ctx):
             # Cumulate FX correction for use in transaction
             if pd.notna(row['__FX_corr']):
                 add_corr(ctx['corr'], row['__FX_corr'], row['c_change'])
@@ -336,7 +336,7 @@ class DegiroAccount(importer.ImporterProtocol):
             # Just make a pretty description
             return 2, "Degiro", f"Currency exchange", []
 
-        def handle_buy(vals, row, amount, ctx):
+        def handle_buy(vals, row, amount, line, ctx):
             cost = position.CostSpec(
                 number_per=vals.price,
                 number_total=None,
@@ -357,8 +357,7 @@ class DegiroAccount(importer.ImporterProtocol):
 
             # calculate total cost rounding error
             if (vals.currency != row['c_change']):
-                # FIXME line number missing
-                logging.log(logging.WARNING, f"line={i2l(0)} currency price:{vals.currency}, change:{row['c_change']} mismatch")
+                logging.log(logging.WARNING, f"line={line} currency price:{vals.currency}, change:{row['c_change']} mismatch")
             else:
                 corr=-(vals.quantity * vals.price + row['change'])
                 add_corr(ctx['corr'], corr, row['c_change'])
@@ -366,7 +365,7 @@ class DegiroAccount(importer.ImporterProtocol):
             return 1, ticker, tdesc, \
                 [data.Posting(account.format(isin=row['isin'], ticker=ticker), stockamount, cost, None, None, None )]
 
-        def handle_sell(vals, row, amount, ctx):
+        def handle_sell(vals, row, amount, line, ctx):
 
             ticker=stocks.isin2ticker(row['isin'])
             stockamount = Amount(-vals.quantity, ticker)
@@ -398,8 +397,7 @@ class DegiroAccount(importer.ImporterProtocol):
 
             # calculate total cost rounding error
             if (vals.currency != row['c_change']):
-                # FIXME line number missing
-                logging.log(logging.WARNING, f"line={i2l(0)} currency price:{vals.currency}, change:{row['c_change']} mismatch")
+                logging.log(logging.WARNING, f"line={line} currency price:{vals.currency}, change:{row['c_change']} mismatch")
             else:
                 corr=-(-vals.quantity * vals.price + row['change'])
                 add_corr(ctx['corr'], corr, row['c_change'])
@@ -519,7 +517,7 @@ class DegiroAccount(importer.ImporterProtocol):
             for t in trtypes:
                 m=t.descriptor(row['description'])
                 if m:
-                    (np, npay, nd, npostings) = t.handler(m.vals, row, amount, ctx)
+                    (np, npay, nd, npostings) = t.handler(m.vals, row, amount, i2l(idx), ctx)
                     postings += npostings
                     # Now set transaction description if posting is more important than the ones before
                     if np < prio:
