@@ -2,19 +2,16 @@ import pandas as pd
 
 import logging
 import sys
-
-import csv
 import re
 from datetime import datetime, timedelta
+from io import StringIO
 
 from beancount.core import data
 from beancount.core.amount import Amount
-
 from beancount.core.number import D
-
 from beancount.core import position
-
 from beancount.ingest import importer
+
 import uuid
 from collections import namedtuple
 from .stockutil import StockSearch
@@ -46,7 +43,19 @@ class DegiroAccount(importer.ImporterProtocol):
                  DepositAccount=None,
                  TickerCacheFile=None,
                  currency='EUR', file_encoding='utf-8' ):
-        self.l = language()
+
+        root=logging.getLogger()
+        root.setLevel(logging.INFO)
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+        root.addHandler(handler)
+
+        self.l = None
+        if language:
+            self.l = language()
+        if not self.l:
+            logging.log(logging.ERROR, f'Unsupported or unset language {self.l}')
+
         self.currency = currency
         self.file_encoding = file_encoding
 
@@ -67,8 +76,6 @@ class DegiroAccount(importer.ImporterProtocol):
         self._balance_date = None
 
         self._fx_match_tolerance_percent = 2.0
-        if not self.l:
-            logging.log(logging.ERROR, f'Unsupported or unset language {self.l}')
 
     def name(self):
         return f'{self.__class__.__name__} importer'
@@ -87,25 +94,31 @@ class DegiroAccount(importer.ImporterProtocol):
         return None
 
     def extract(self, _file, existing_entries=None):
-        root=logging.getLogger()
-        root.setLevel(logging.INFO)
-        handler = logging.StreamHandler(sys.stderr)
-        #handler.setLevel(logging.DEBUG)
-        handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s: %(message)s'))
-        root.addHandler(handler)
-
-        entries = []
 
         def format_datetime(x):
             try:
-                dt = pd.to_datetime(x, format=self.l.datetime_format)
+                return pd.to_datetime(x, format=self.l.datetime_format)
             except Exception as e:
                 # bad row with no date (will be sanitized later)
                 return None
-            return dt
+
+        with open(_file.name) as f:
+            lines=f.readlines()
+
+        if len(lines) < 1:
+            logging.log(logging.ERROR, f'Empty input')
+            return []
+        header=lines[0]
+        del lines[0]
+        lines = [header] + list(reversed(lines))
+        linecount = len(lines)
+
+        # map index to line number
+        def i2l(i:int):
+            return linecount-i
 
         try:
-            df = pd.read_csv(_file.name, encoding=self.file_encoding,
+            df = pd.read_csv(StringIO(''.join(lines)), encoding=self.file_encoding,
                              header=0, names=FIELDS_EN,
                              parse_dates={ 'datetime' : ['date', 'time'] },
                              date_parser = format_datetime,
@@ -119,10 +132,6 @@ class DegiroAccount(importer.ImporterProtocol):
             raise InvalidFormatError(f"Read file "+ _file.name + " failed " + e)
 
         # some rows are broken into more rows. Sanitize them now
-
-        # map index to line number
-        def i2l(i:int):
-            return i+2
 
         # put empty string if nan in these columns to ease sanitization below
         df.fillna(value={'orderid':'', 'product':'', 'description':''}, inplace=True)
@@ -431,6 +440,8 @@ class DegiroAccount(importer.ImporterProtocol):
 
         balances={}
 
+        entries = []
+
         while True:
 
             prev_row = row
@@ -463,7 +474,8 @@ class DegiroAccount(importer.ImporterProtocol):
 
                 if postings:
                     uuid_meta = {'uuid':prev_row['uuid']}
-                    entries.append(data.Transaction(data.new_metadata(_file.name,i2l(prev_idx), uuid_meta),
+                    # Use fake lineno meta prev_idx to keep order of entries
+                    entries.append(data.Transaction(data.new_metadata(_file.name, prev_idx, uuid_meta),
                                                     prev_row['datetime'].date(),
                                                     self.FLAG,
                                                     payee,
@@ -491,7 +503,8 @@ class DegiroAccount(importer.ImporterProtocol):
                     add_corr(ctx['bcorr'], bdiff, row['c_balance'])
                     add_corr(ctx['corr'], -bdiff, row['c_balance'])
 
-            balances[row['c_balance']]={'line': i2l(idx), 'balance': row['balance'], 'date': row['datetime'].date()}
+            # Use fake lineno meta idx to keep order of entries
+            balances[row['c_balance']]={'line': idx, 'balance': row['balance'], 'date': row['datetime'].date()}
 
             if self.l.deposit(row['description']) and self.depositAccount is None:
                 continue
