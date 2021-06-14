@@ -4,7 +4,7 @@ from beancount_degiro import DegiroAccount, DegiroDE
 
 # example importer config for Degiro importer
 # use with "bean-extract ConfigDegiro.py /path/to/Account.csv
-
+# Account.csv is the "Account" activity report from Degiro
 
 account = DegiroAccount(
     language = DegiroDE, # defines descriptors for transaction descriptions
@@ -14,11 +14,12 @@ account = DegiroAccount(
                                                                               # Available tokens:
     LiquidityAccount       = 'Aktiva:Invest:Degiro:{currency}',               # {currency}
     StocksAccount          = 'Aktiva:Invest:Aktien:Degiro:{ticker}',          # {isin}, {ticker}
+    # You probably want to use the same account for stocks and splits, otherwise the inventory will be messed up
     SplitsAccount          = 'Aktiva:Invest:Aktiensplits:Degiro:{ticker}',    # {isin}, {ticker}
     FeesAccount            = 'Ausgaben:Invest:Gebühren:Degiro:{currency}',    # {currency}
     InterestAccount        = 'Ausgaben:Invest:Zins:Degiro',                   # {currency}
     PnLAccount             = 'Einkommen:Invest:GuV:Degiro',                   # {isin}, {ticker}, {currency}
-    DivIncomeAccount       = 'Einkommen:Invest:Div',                          # {isin}, {ticker}, {currency}
+    DivIncomeAccount       = 'Einkommen:Invest:Div:Degiro',                   # {isin}, {ticker}, {currency}
     WhtAccount             = 'Ausgaben:Invest:Wht:Degiro',                    # {isin}, {ticker}, {currency}
     RoundingErrorAccount   = 'Ausgaben:Invest:Gebühren:Rundungsfehler',       # {currency}
 
