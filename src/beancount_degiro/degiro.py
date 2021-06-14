@@ -15,6 +15,7 @@ from beancount.ingest import importer
 import uuid
 from collections import namedtuple
 from .stockutil import StockSearch
+from .degiro_lang import DegiroLangInterface
 
 class InvalidFormatError(Exception):
     def __init__(self, msg):
@@ -53,7 +54,7 @@ class DegiroAccount(importer.ImporterProtocol):
         self.l = None
         if language:
             self.l = language()
-        if not self.l:
+        if not self.l or not isinstance(self.l, DegiroLangInterface):
             logging.log(logging.ERROR, f'Unsupported or unset language {self.l}')
 
         self.currency = currency
@@ -83,7 +84,7 @@ class DegiroAccount(importer.ImporterProtocol):
     def identify(self, file_):
         # Check header line only
         with open(file_.name, encoding=self.file_encoding) as fd:
-            return bool(re.match(','.join(self.l.FIELDS), fd.readline()))
+            return bool(re.match(','.join(self.l.fields), fd.readline()))
 
     def file_account(self, _):
         return self.liquidityAccount.format(currency=self.currency)
