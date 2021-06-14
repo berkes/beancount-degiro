@@ -40,7 +40,7 @@ class DegiroAccount(importer.ImporterProtocol):
     def __init__(self, language, LiquidityAccount, StocksAccount, SplitsAccount,
                  FeesAccount, InterestAccount,
                  PnLAccount, DivIncomeAccount, WhtAccount,
-                 ExchangeRoundingErrorAccount,
+                 RoundingErrorAccount,
                  DepositAccount=None,
                  TickerCacheFile=None,
                  currency='EUR', file_encoding='utf-8' ):
@@ -69,7 +69,7 @@ class DegiroAccount(importer.ImporterProtocol):
         self.divIncomeAccount = DivIncomeAccount
         self.whtAccount = WhtAccount
         self.depositAccount = DepositAccount
-        self.exchangeRoundingErrorAccount = ExchangeRoundingErrorAccount
+        self.roundingErrorAccount = RoundingErrorAccount
         self.tickerCacheFile = TickerCacheFile
         self._date_from = None
         self._date_to = None
@@ -457,7 +457,7 @@ class DegiroAccount(importer.ImporterProtocol):
                     if abs(ctx['corr'][currency]) >= 0.005:
                         postings.append(
                             data.Posting(
-                                self.exchangeRoundingErrorAccount.format(currency=currency),
+                                self.roundingErrorAccount.format(currency=currency),
                                 Amount(ctx['corr'][currency], currency), None, None, None, None
                             )
                         )

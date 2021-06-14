@@ -20,7 +20,7 @@ account = DegiroAccount(
     PnLAccount             = 'Einkommen:Invest:GuV:Degiro',                   # {isin}, {ticker}, {currency}
     DivIncomeAccount       = 'Einkommen:Invest:Div',                          # {isin}, {ticker}, {currency}
     WhtAccount             = 'Ausgaben:Invest:Wht:Degiro',                    # {isin}, {ticker}, {currency}
-    ExchangeRoundingErrorAccount = 'Ausgaben:Invest:Gebühren:Rundungsfehler', # {currency}
+    RoundingErrorAccount   = 'Ausgaben:Invest:Gebühren:Rundungsfehler',       # {currency}
 
     # DepositAccount: put in your checkings account if you want deposit transactions
     #DepositAccount         = 'Aktiva:DKB:Girokonto'                          # {currency}
