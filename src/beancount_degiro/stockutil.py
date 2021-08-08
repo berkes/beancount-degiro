@@ -18,13 +18,17 @@ class StockSearch(object):
 
     def isin2ticker(self, isin):
         if self.cache is None:
-            # try to use cachefile
-            try:
-                with open(self.cachefile,'rb') as cf:
-                    self.cache = pickle.load(cf)
-            except OSError as err:
-                logging.log(logging.INFO, f"Could not open {self.cachefile}: {err}")
+            if self.cachefile is not None:
+                # try to use cachefile
+                try:
+                    with open(self.cachefile,'rb') as cf:
+                        self.cache = pickle.load(cf)
+                except OSError as err:
+                    logging.log(logging.INFO, f"Could not open {self.cachefile}: {err}")
+                    self.cache = {}
+            else:
                 self.cache = {}
+
         if isin in self.cache:
             ticker=self.cache[isin]
             logging.log(logging.DEBUG, f"Reuse from cache: {isin}:{ticker}")
@@ -33,8 +37,9 @@ class StockSearch(object):
         try:
             url = "https://query2.finance.yahoo.com/v1/finance/search"
             params = {'q': isin, 'quotesCount': 1, 'newsCount': 0}
+            headers = {'User-Agent': 'python'} # fake user agent
             logging.log(logging.INFO, f"Querying ISIN {isin}...")
-            resp = r.get(url, params=params)
+            resp = r.get(url, headers=headers, params=params)
             js = resp.json()
         except Exception as e:
             logging.log(logging.WARNING, f"Querying ISIN {isin} failed: {e}")

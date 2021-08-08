@@ -532,7 +532,7 @@ class DegiroAccount(importer.ImporterProtocol):
 
             amount = Amount(row['change'],row['c_change'])
 
-            fxprice = row['__FX'] if pd.notna(row['__FX']) else None
+            fxprice = row['__FX'] if '__FX' in row and pd.notna(row['__FX']) else None
 
             postings.append(data.Posting(self.liquidityAccount.format(currency=row['c_change']), amount, None, fxprice, None, None ))
 
