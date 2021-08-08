@@ -230,6 +230,7 @@ class DegiroAccount(importer.ImporterProtocol):
         dfn = df[df['uuid']=='']
 
         idx_split = None # Consecutive stock split rows are matched
+        idx_isin_change = None # Consecutive ISIN change rows are matched
         # Generate uuid for transactions without orderid
         for idx, row in dfn.iterrows():
             # liquidity fund price changes and fees: single line pro transaction
@@ -275,12 +276,27 @@ class DegiroAccount(importer.ImporterProtocol):
                 df.loc[idx_split, 'uuid'] = df.loc[idx, 'uuid'] = muuid
                 idx_split=None
                 continue
+            if self.l.isin_change(row['description']):
+                # ISIN Change of fonds: buy and sell the same amount for the same price
+                if idx_isin_change is None:
+                    idx_isin_change = idx
+                    continue
+                other_row=dfn.loc[idx_isin_change]
+                if other_row['datetime'] != row['datetime'] or other_row['change'] != -row['change'] or other_row['c_change'] != row['c_change']:
+                    logging.log(logging.WARNING, f"line={i2l(idx_isin_change)} line={i2l(idx)} ISIN change matching failed")
+                    idx_isin_change=idx  # retry matching this row with following ISIN change row
+                    continue
+                muuid=str(uuid.uuid1())
+                logging.log(logging.DEBUG, f"line={i2l(idx_isin_change)} line={i2l(idx)} marking ISIN change uuid={muuid}")
+                df.loc[idx_isin_change, 'uuid'] = df.loc[idx, 'uuid'] = muuid
+                idx_isin_change=None
+                continue
             if self.l.buy(row['description']):
                 # transition between exchanges: buy and sell the same amount for the same price
                 mdfn=dfn[(dfn['datetime']==row['datetime']) & (dfn['isin']==row['isin'])
                          & (dfn['change']==-row['change']) & (dfn['c_change']==row['c_change'])]
                 if 1 != len(mdfn.index):
-                    logging.log(logging.WARNING, f"line={i2l(mdfn.index)} erroneous transfer match")
+                    logging.log(logging.WARNING, f"line={i2l(idx)} erroneous transfer match")
                     continue
 
                 # No affect for booking. Drop these rows.
@@ -352,6 +368,9 @@ class DegiroAccount(importer.ImporterProtocol):
             if vals.split:
                 account = self.splitsAccount
                 tdesc=f"SPLIT {row['product']}"
+            elif vals.isin_change:
+                account = self.stocksAccount
+                tdesc=f"ISIN CHANGE {row['product']} {ticker}"
             else:
                 account = self.stocksAccount
                 tdesc=f"BUY {row['product']} {stockamount.number} {ticker} @ {vals.price} {vals.currency}"
@@ -384,6 +403,9 @@ class DegiroAccount(importer.ImporterProtocol):
             if vals.split:
                 account = self.splitsAccount
                 tdesc=f"SPLIT {row['product']} {ticker}"
+            elif vals.isin_change:
+                account = self.stocksAccount
+                tdesc=f"ISIN CHANGE {row['product']} {ticker}"
             else:
                 account = self.stocksAccount
                 tdesc=f"SELL {row['product']} {stockamount.number} {ticker} @ {vals.price} {vals.currency}"

@@ -67,13 +67,17 @@ class DegiroLangInterface(abc.ABC):
     def split(self, d):
         pass
 
+    @abc.abstractmethod
+    def isin_change(self, d):
+        pass
+
 class DR:
     match = None
     vals = None
     def __bool__(self):
         return bool(self.match)
 
-VALS = namedtuple('VALS', ['price', 'quantity', 'currency', 'split'], defaults=[False])
+VALS = namedtuple('VALS', ['price', 'quantity', 'currency', 'split', 'isin_change'], defaults=[False])
 
 def process(r, d, v=None):
     dr=DR()
@@ -122,18 +126,18 @@ class DegiroDE(DegiroLangInterface):
         return process('(((SOFORT|flatex) )?Einzahlung)|(Auszahlung)', d)
 
     def buy(self, d):
-        return process('^(AKTIENSPLIT: )?Kauf ([\d.]+) zu je ([\d,]+) (\w+)', d,
+        return process('^((AKTIENSPLIT: )|(ISIN-ÄNDERUNG: ))?Kauf ([\d.]+) zu je ([\d,]+) (\w+)', d,
                             lambda m:
-                            VALS(price=self.fmt_number(m.group(3)), quantity=self.fmt_number(m.group(2)),
-                                currency=m.group(4),split=bool(m.group(1)))
+                            VALS(price=self.fmt_number(m.group(5)), quantity=self.fmt_number(m.group(4)),
+                                 currency=m.group(6), split=bool(m.group(2)), isin_change=bool(m.group(3)))
                             )
 
     def sell(self, d):
-        return process('(((AKTIENSPLIT)|(AUSZAHLUNG ZERTIFIKAT)): )?Verkauf ([\d.]+) zu je ([\d,]+) (\w+)', d,
+        return process('(((AKTIENSPLIT)|(AUSZAHLUNG ZERTIFIKAT)|(ISIN-ÄNDERUNG)): )?Verkauf ([\d.]+) zu je ([\d,]+) (\w+)', d,
                             lambda m:
-                            VALS(price=self.fmt_number(m.group(6)), quantity=self.fmt_number(m.group(5)),
-                                 currency=m.group(7), split=bool(m.group(3)))
-                            )
+                            VALS(price=self.fmt_number(m.group(7)), quantity=self.fmt_number(m.group(6)),
+                                 currency=m.group(8), split=bool(m.group(3)), isin_change=bool(m.group(5)))
+                       )
 
     def dividend(self, d):
         return process('(Dividende|(Ausschüttung.*))$', d)
@@ -155,3 +159,6 @@ class DegiroDE(DegiroLangInterface):
 
     def split(self, d):
         return process('AKTIENSPLIT:', d)
+
+    def isin_change(self, d):
+        return process('ISIN-ÄNDERUNG', d)
