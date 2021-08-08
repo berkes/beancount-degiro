@@ -29,11 +29,16 @@ class StockSearch(object):
             ticker=self.cache[isin]
             logging.log(logging.DEBUG, f"Reuse from cache: {isin}:{ticker}")
             return ticker
-        url = "https://query2.finance.yahoo.com/v1/finance/search"
-        params = {'q': isin, 'quotesCount': 1, 'newsCount': 0}
-        logging.log(logging.INFO, f"Querying ISIN {isin}...")
-        resp = r.get(url, params=params)
-        js = resp.json()
+        js = {}
+        try:
+            url = "https://query2.finance.yahoo.com/v1/finance/search"
+            params = {'q': isin, 'quotesCount': 1, 'newsCount': 0}
+            logging.log(logging.INFO, f"Querying ISIN {isin}...")
+            resp = r.get(url, params=params)
+            js = resp.json()
+        except Exception as e:
+            logging.log(logging.WARNING, f"Querying ISIN {isin} failed: {e}")
+
         if not 'quotes' in js or len(js['quotes']) < 1:
             logging.log(logging.WARNING, f"ISIN {isin} not found")
             ticker=isin  # fallback
