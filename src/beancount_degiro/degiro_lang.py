@@ -203,7 +203,7 @@ class DegiroNL(DegiroLangInterface):
         return process('DEGIRO Transactiekosten en/of kosten van derden|DEGIRO Aansluitingskosten', d)
 
     def deposit(self, d):
-        return process('.*(iDEAL|iDeal|Sofort|flatex)? ?(Storting|storting|Deposit|Uitbetaling)', d)
+        return process('.*(S|s)torting|Deposit', d)
 
     def buy(self, d):
         return process('^((AANDELENSPLIT: )|(ISIN-WIJZIGING: ))?Koop ([\d.]+) @ ([\d,]+) (\w+)', d,
