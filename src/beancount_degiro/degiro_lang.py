@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from beancount.core.number import D, Decimal
 import pandas as pd
+import logging
 from collections import namedtuple
 import re
 import abc
@@ -84,6 +85,8 @@ def process(r, d, v=None):
     dr.match=re.match(r, d)
     if dr and v:
         dr.vals=v(dr.match)
+    logging.debug(f'process: {r}, {d} into {dr}: {dr.vals}, {dr.match}')
+
     return dr
 
 class DegiroDE(DegiroLangInterface):
