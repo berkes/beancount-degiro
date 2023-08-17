@@ -162,3 +162,80 @@ class DegiroDE(DegiroLangInterface):
 
     def isin_change(self, d):
         return process('ISIN-ÄNDERUNG', d)
+
+class DegiroNL(DegiroLangInterface):
+    def __str__(self):
+        return 'Degiro Dutch language module'
+
+    FIELDS = (
+        'Datum',
+        'Tijd',
+        'Valutadatum',
+        'Product',
+        'ISIN',
+        'Omschrijving',
+        'FX',
+        'Mutatie',  # Currency of change
+        '',  # Amount of change
+        'Saldo',  # Currency of balance
+        '',  # Amount of balance
+        'Order Id'
+    )
+
+    DATETIME_FORMAT = '%d-%m-%Y %H:%M'
+
+    def fmt_number(self, value: str) -> Decimal:
+        if value == '':
+            return None
+        thousands_sep = '.'
+        decimal_sep = ','
+        return D(value.replace(thousands_sep, '').replace(decimal_sep, '.'))
+
+    # Descriptors for various posting types to book them automatically
+
+    def liquidity_fund(self, d):
+        return process('^Geldmarktfonds (Wijziging prijs|Conversie)|Koersverandering geldmarktfonds', d)
+
+    def fees(self, d):
+        return process('DEGIRO Transactiekosten en/of kosten van derden|DEGIRO Aansluitingskosten', d)
+
+    def deposit(self, d):
+        return process('.*(iDEAL|iDeal|Sofort|flatex)? ?(Storting|storting|Deposit|Uitbetaling)', d)
+
+    def buy(self, d):
+        return process('^((AANDELENSPLIT: )|(ISIN-WIJZIGING: ))?Koop ([\d.]+) @ ([\d,]+) (\w+)', d,
+                            lambda m:
+                            VALS(price=self.fmt_number(m.group(5)), quantity=self.fmt_number(m.group(4)),
+                                 currency=m.group(6), split=bool(m.group(2)), isin_change=bool(m.group(3)))
+                            )
+
+    def sell(self, d):
+        return process('(((AANDELENSPLIT)|(UITBETALING CERTIFICAAT)|(ISIN-WIJZIGING)): )?Verkoop ([\d.]+) @ ([\d,]+) (\w+)', d,
+                            lambda m:
+                            VALS(price=self.fmt_number(m.group(7)), quantity=self.fmt_number(m.group(6)),
+                                 currency=m.group(8), split=bool(m.group(3)), isin_change=bool(m.group(5)))
+                       )
+
+    def dividend(self, d):
+        return process('(Dividend|(Uitkering.*))$', d)
+
+    def dividend_tax(self, d):
+        return process('Dividendbelasting', d)
+
+    def cst(self, d):
+        return process('Degiro Cash Sweep Transfer', d)
+
+    def interest(self, d):
+        return process('Flatex Interest?', d)
+
+    def change(self, d):
+        return process('Valuta (Creditering|Debitering)', d)
+
+    def payout(self, d):
+        return process('UITBETALING CERTIFICAAT', d)
+
+    def split(self, d):
+        return process('AANDELENSPLIT:', d)
+
+    def isin_change(self, d):
+        return process('ISIN-WIJZIGING', d)
