@@ -3,6 +3,7 @@ import pandas as pd
 import logging
 import sys
 import re
+import os
 from datetime import datetime, timedelta
 from io import StringIO
 
@@ -45,11 +46,7 @@ class DegiroAccount(importer.ImporterProtocol):
                  TickerCacheFile=None,
                  currency='EUR', file_encoding='utf-8' ):
 
-        root=logging.getLogger()
-        root.setLevel(logging.INFO)
-        handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
-        root.addHandler(handler)
+        self.setup_logger()
 
         self.l = None
         if language:
@@ -77,6 +74,21 @@ class DegiroAccount(importer.ImporterProtocol):
         self._balance_date = None
 
         self._fx_match_tolerance_percent = 2.0
+
+    def setup_logger(self):
+        env_loglevel = os.environ.get('PYTHON_LOG')
+        level = {
+            'DEBUG': logging.DEBUG,
+            'INFO': logging.INFO,
+            'WARNING': logging.WARNING,
+            'ERROR': logging.ERROR
+        }.get(env_loglevel, logging.INFO)
+        root=logging.getLogger()
+        root.setLevel(level)
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+        root.addHandler(handler)
+        root.debug(f'loglevel={level}')
 
     def name(self):
         return f'{self.__class__.__name__} importer'
